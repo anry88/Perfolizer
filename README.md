@@ -27,7 +27,7 @@ Perfolizer is a lightweight, JMeter-like load testing tool written in Golang. It
 
 1.  **Clone the repository**:
     ```bash
-    git clone https://github.com/yourusername/perfolizer.git
+    git clone git@github.com:anry88/Perfolizer.git
     cd perfolizer
     ```
 

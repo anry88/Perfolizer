@@ -5,6 +5,7 @@ import (
 	"perfolizer/pkg/core"
 	"perfolizer/pkg/elements"
 	"strconv"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -23,10 +24,13 @@ type PerfolizerApp struct {
 
 	TestPlan      core.TestElement // Root of the plan
 	CurrentNodeID string
+
+	cancelFunc context.CancelFunc
+	isRunning  bool
 }
 
 func NewPerfolizerApp() *PerfolizerApp {
-	a := app.New()
+	a := app.NewWithID("com.github.anry88.perfolizer")
 	w := a.NewWindow("Perfolizer")
 	w.Resize(fyne.NewSize(1024, 768))
 
@@ -109,8 +113,16 @@ func (pa *PerfolizerApp) setupUI() {
 		widget.NewToolbarAction(theme.ContentAddIcon(), func() { pa.addElement() }),       // Add
 		widget.NewToolbarAction(theme.ContentRemoveIcon(), func() { pa.removeElement() }), // Remove
 		widget.NewToolbarSpacer(),
+		widget.NewToolbarAction(theme.FolderOpenIcon(), func() { pa.loadTestPlan() }),
+		widget.NewToolbarAction(theme.DocumentSaveIcon(), func() { pa.saveTestPlan() }),
+		widget.NewToolbarSpacer(),
 		widget.NewToolbarAction(theme.MediaPlayIcon(), func() { pa.runTest() }), // Start
-		widget.NewToolbarAction(theme.MediaStopIcon(), func() {}),               // Stop
+		widget.NewToolbarAction(theme.MediaStopIcon(), func() {
+			if pa.cancelFunc != nil {
+				pa.cancelFunc()
+				pa.cancelFunc = nil
+			}
+		}), // Stop
 	)
 
 	// 3. Layout
@@ -164,8 +176,17 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 		methodEntry := widget.NewSelect([]string{"GET", "POST", "PUT", "DELETE"}, func(s string) { v.Method = s })
 		methodEntry.SetSelected(v.Method)
 
+		rpsEntry := widget.NewEntry()
+		rpsEntry.SetText(strconv.FormatFloat(v.TargetRPS, 'f', 2, 64))
+		rpsEntry.OnChanged = func(s string) {
+			if val, err := strconv.ParseFloat(s, 64); err == nil {
+				v.TargetRPS = val
+			}
+		}
+
 		form.Append("URL", urlEntry)
 		form.Append("Method", methodEntry)
+		form.Append("Target RPS (0 = default)", rpsEntry)
 
 	case *elements.SimpleThreadGroup:
 		usersEntry := widget.NewEntry()
@@ -215,31 +236,109 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 		form.Append("Target RPS", rpsEntry)
 		form.Append("Max Users", usersEntry)
 		form.Append("Duration", durationEntry)
+
+	case *elements.PauseController:
+		durEntry := widget.NewEntry()
+		// Display in milliseconds
+		durEntry.SetText(strconv.FormatInt(v.Duration.Milliseconds(), 10))
+		durEntry.OnChanged = func(s string) {
+			if val, err := strconv.Atoi(s); err == nil {
+				v.Duration = time.Duration(val) * time.Millisecond
+			}
+		}
+
+		form.Append("Duration (ms)", durEntry)
 	}
 
 	pa.Content.Objects = []fyne.CanvasObject{container.NewVBox(widget.NewLabel("Properties"), form)}
 	pa.Content.Refresh()
 }
 
+func (pa *PerfolizerApp) saveTestPlan() {
+	dialog.ShowFileSave(func(writer fyne.URIWriteCloser, err error) {
+		if err != nil {
+			dialog.ShowError(err, pa.Window)
+			return
+		}
+		if writer == nil {
+			return // User cancelled
+		}
+		defer writer.Close()
+
+		// Use core.SaveTestPlan
+		if err := core.SaveTestPlan(writer.URI().Path(), pa.TestPlan); err != nil {
+			dialog.ShowError(err, pa.Window)
+		}
+	}, pa.Window)
+}
+
+func (pa *PerfolizerApp) loadTestPlan() {
+	dialog.ShowFileOpen(func(reader fyne.URIReadCloser, err error) {
+		if err != nil {
+			dialog.ShowError(err, pa.Window)
+			return
+		}
+		if reader == nil {
+			return // User cancelled
+		}
+		defer reader.Close()
+
+		// Use core.LoadTestPlan
+		plan, err := core.LoadTestPlan(reader.URI().Path())
+		if err != nil {
+			dialog.ShowError(err, pa.Window)
+			return
+		}
+		pa.TestPlan = plan
+		// Refresh Tree from root
+		pa.Tree.RefreshItem("")
+		// Reset
+		pa.CurrentNodeID = ""
+		pa.Content.Objects = nil
+		pa.Content.Refresh()
+		pa.Tree.Refresh()
+
+	}, pa.Window)
+}
+
 func (pa *PerfolizerApp) runTest() {
+	if pa.isRunning {
+		return
+	}
+	pa.isRunning = true
+
 	dashboard := NewDashboardWindow(pa.FyneApp)
 	dashboard.Show()
 
-	runner := core.NewStatsRunner(func(rps float64, avgLat float64) {
-		dashboard.Update(rps, avgLat)
+	ctx, cancel := context.WithCancel(context.Background())
+	pa.cancelFunc = cancel
+
+	runner := core.NewStatsRunner(ctx, func(data map[string]core.Metric) {
+		dashboard.Update(data)
 	})
 
 	go func() {
+		defer cancel() // Stop stats runner
+		defer func() {
+			pa.isRunning = false
+			pa.cancelFunc = nil
+		}()
+
 		// Find all thread groups and execute them
-		// TODO: This should recursive search
 		children := pa.TestPlan.GetChildren()
+
+		var wg sync.WaitGroup
+
 		for _, child := range children {
 			if tg, ok := child.(core.ThreadGroup); ok {
-				// We need a context for cancellation
-				// For now simple background
-				tg.Start(context.Background(), runner)
+				wg.Add(1)
+				go func(t core.ThreadGroup) {
+					defer wg.Done()
+					t.Start(ctx, runner)
+				}(tg)
 			}
 		}
+		wg.Wait()
 	}()
 }
 

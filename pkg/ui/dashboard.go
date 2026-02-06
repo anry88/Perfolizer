@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"perfolizer/pkg/core"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -9,34 +10,49 @@ import (
 )
 
 type DashboardWindow struct {
+	App      fyne.App
 	Window   fyne.Window
 	RpsChart *LineChart
 	LatChart *LineChart
 	RpsLabel *widget.Label
 	LatLabel *widget.Label
+	Legend   *fyne.Container
+
+	seriesMap map[string]bool // To track existing checkboxes
 }
 
-func NewDashboardWindow(app fyne.App) *DashboardWindow {
-	w := app.NewWindow("Test Dashboard")
-	w.Resize(fyne.NewSize(800, 600))
+func NewDashboardWindow(a fyne.App) *DashboardWindow {
+	w := a.NewWindow("Test Runtime Dashboard")
+	w.Resize(fyne.NewSize(1000, 700))
 
-	rpsChart := NewLineChart(60) // 60 seconds
-	latChart := NewLineChart(60)
+	rpsChart := NewLineChart(100)
+	latChart := NewLineChart(100)
 
-	rpsLabel := widget.NewLabel("RPS: 0")
+	rpsLabel := widget.NewLabel("Total RPS: 0")
 	latLabel := widget.NewLabel("Avg Latency: 0 ms")
 
-	w.SetContent(container.NewGridWithRows(2,
-		container.NewBorder(rpsLabel, nil, nil, nil, rpsChart),
-		container.NewBorder(latLabel, nil, nil, nil, latChart),
-	))
+	legend := container.NewHBox(widget.NewLabel("Series:"))
+
+	content := container.NewVBox(
+		rpsLabel,
+		container.NewPadded(rpsChart),
+		latLabel,
+		container.NewPadded(latChart),
+		widget.NewLabel("Legend:"),
+		container.NewHScroll(legend),
+	)
+
+	w.SetContent(content)
 
 	return &DashboardWindow{
-		Window:   w,
-		RpsChart: rpsChart,
-		LatChart: latChart,
-		RpsLabel: rpsLabel,
-		LatLabel: latLabel,
+		Window:    w,
+		App:       a,
+		RpsChart:  rpsChart,
+		LatChart:  latChart,
+		RpsLabel:  rpsLabel,
+		LatLabel:  latLabel,
+		Legend:    legend,
+		seriesMap: make(map[string]bool),
 	}
 }
 
@@ -44,10 +60,46 @@ func (d *DashboardWindow) Show() {
 	d.Window.Show()
 }
 
-func (d *DashboardWindow) Update(rps float64, avgLat float64) {
-	d.RpsChart.Add(rps)
-	d.LatChart.Add(avgLat)
+func (d *DashboardWindow) Update(data map[string]core.Metric) {
+	// Aggregate total for labels
+	totalRps := 0.0
+	totalLat := 0.0
+	if t, ok := data["Total"]; ok {
+		totalRps = t.RPS
+		totalLat = t.AvgLatency
+	}
 
-	d.RpsLabel.SetText(fmt.Sprintf("RPS: %.2f", rps))
-	d.LatLabel.SetText(fmt.Sprintf("Avg Latency: %.2f ms", avgLat))
+	// Make sure to use Thread-safe call for UI
+	// Assuming fyne.Do is available in the imported version, otherwise use Window.Canvas().Refresh() approach?
+	// The error message specifically requested fyne.Do
+	fyne.Do(func() {
+		// Detect new series for Legend
+		for name := range data {
+			if name == "Total" {
+				continue
+			}
+			if _, exists := d.seriesMap[name]; !exists {
+				// Add Checkbox
+				d.seriesMap[name] = true
+				cb := widget.NewCheck(name, func(b bool) {
+					d.RpsChart.SetVisible(name, b)
+					d.LatChart.SetVisible(name, b)
+				})
+				cb.SetChecked(true)
+				d.Legend.Add(cb)
+			}
+		}
+
+		for name, m := range data {
+			if name == "Total" {
+				continue
+			}
+			fmt.Printf("Updating Chart Series: %s -> RPS: %f\n", name, m.RPS)
+			d.RpsChart.Add(name, m.RPS)
+			d.LatChart.Add(name, m.AvgLatency)
+		}
+
+		d.RpsLabel.SetText(fmt.Sprintf("Total RPS: %.2f", totalRps))
+		d.LatLabel.SetText(fmt.Sprintf("Avg Latency: %.2f ms", totalLat))
+	})
 }

@@ -5,7 +5,60 @@ import (
 	"time"
 )
 
-// --- Loop Controller (While/Simple Loop) ---
+func init() {
+	core.RegisterFactory("LoopController", func(name string, props map[string]interface{}) core.TestElement {
+		return &LoopController{
+			BaseElement: core.NewBaseElement(name),
+			Loops:       core.GetInt(props, "Loops", 1),
+		}
+	})
+	core.RegisterFactory("IfController", func(name string, props map[string]interface{}) core.TestElement {
+		return &IfController{
+			BaseElement: core.NewBaseElement(name),
+			Condition:   func(ctx *core.Context) bool { return true }, // Scripting not supported in JSON yet
+		}
+	})
+	core.RegisterFactory("PauseController", func(name string, props map[string]interface{}) core.TestElement {
+		return &PauseController{
+			BaseElement: core.NewBaseElement(name),
+			Duration:    time.Duration(core.GetInt(props, "DurationMS", 1000)) * time.Millisecond,
+		}
+	})
+}
+
+// ... LoopController methods ...
+
+func (l *LoopController) GetType() string {
+	return "LoopController"
+}
+
+func (l *LoopController) GetProps() map[string]interface{} {
+	return map[string]interface{}{
+		"Loops": l.Loops,
+	}
+}
+
+// ... IfController methods ...
+
+func (c *IfController) GetType() string {
+	return "IfController"
+}
+
+func (c *IfController) GetProps() map[string]interface{} {
+	return map[string]interface{}{}
+}
+
+// ... PauseController methods ...
+
+func (p *PauseController) GetType() string {
+	return "PauseController"
+}
+
+func (p *PauseController) GetProps() map[string]interface{} {
+	return map[string]interface{}{
+		"DurationMS": p.Duration.Milliseconds(),
+	}
+}
 
 type LoopController struct {
 	core.BaseElement
@@ -49,7 +102,7 @@ func (l *LoopController) Execute(ctx *core.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		
+
 		for _, child := range l.GetChildren() {
 			if exec, ok := child.(core.Executable); ok {
 				if err := exec.Execute(ctx); err != nil {
@@ -60,7 +113,6 @@ func (l *LoopController) Execute(ctx *core.Context) error {
 	}
 	return nil
 }
-
 
 // --- If Controller ---
 
@@ -110,9 +162,9 @@ func NewPauseController(name string, d time.Duration) *PauseController {
 }
 
 func (p *PauseController) Clone() core.TestElement {
-    newP := *p
-    newP.BaseElement = core.NewBaseElement(p.Name())
-    return &newP
+	newP := *p
+	newP.BaseElement = core.NewBaseElement(p.Name())
+	return &newP
 }
 
 func (p *PauseController) Execute(ctx *core.Context) error {
