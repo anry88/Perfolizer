@@ -1,0 +1,61 @@
+{
+  "type": "TestPlan",
+  "name": "Test Plan",
+  "children": [
+    {
+      "type": "RPSThreadGroup",
+      "name": "RPS Group",
+      "props": {
+        "DurationMS": 60000,
+        "RPS": 20,
+        "Users": 10
+      },
+      "children": [
+        {
+          "type": "HttpSampler",
+          "name": "Google",
+          "props": {
+            "Method": "GET",
+            "TargetRPS": 10,
+            "Url": "https://www.google.com"
+          }
+        },
+        {
+          "type": "HttpSampler",
+          "name": "Facebook",
+          "props": {
+            "Method": "GET",
+            "TargetRPS": 5,
+            "Url": "https://www.facebook.com"
+          }
+        }
+      ]
+    },
+    {
+      "type": "SimpleThreadGroup",
+      "name": "Thread Group",
+      "props": {
+        "Iterations": 10,
+        "Users": 1
+      },
+      "children": [
+        {
+          "type": "HttpSampler",
+          "name": "Localhost",
+          "props": {
+            "Method": "GET",
+            "TargetRPS": 0,
+            "Url": "http://localhost:8080"
+          }
+        },
+        {
+          "type": "PauseController",
+          "name": "Pause",
+          "props": {
+            "DurationMS": 5000
+          }
+        }
+      ]
+    }
+  ]
+}
