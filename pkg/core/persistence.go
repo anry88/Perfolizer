@@ -9,8 +9,10 @@ import (
 // DTOs for JSON serialization
 
 type TestElementDTO struct {
-	Type     string                 `json:"type"`
-	Name     string                 `json:"name"`
+	Type string `json:"type"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+
 	Props    map[string]interface{} `json:"props,omitempty"`
 	Children []TestElementDTO       `json:"children,omitempty"`
 }
@@ -72,6 +74,8 @@ func toDTO(el TestElement) TestElementDTO {
 		dto.Type = "TestPlan" // Default
 	}
 
+	dto.ID = el.ID() // Save ID
+
 	for _, child := range el.GetChildren() {
 		dto.Children = append(dto.Children, toDTO(child))
 	}
@@ -83,17 +87,24 @@ func fromDTO(dto TestElementDTO) (TestElement, error) {
 	// We need a Factory.
 	// Since `core` cannot know about `elements`, we need a registered factory.
 	factory := GetFactory(dto.Type)
+	var el TestElement
+
 	if factory == nil {
 		if dto.Type == "TestPlan" {
 			// Special case for root
-			el := NewBaseElement(dto.Name)
-			loadChildren(&el, dto.Children)
-			return &el, nil
+			e := NewBaseElement(dto.Name)
+			el = &e
+		} else {
+			return nil, fmt.Errorf("unknown element type: %s", dto.Type)
 		}
-		return nil, fmt.Errorf("unknown element type: %s", dto.Type)
+	} else {
+		el = factory(dto.Name, dto.Props)
 	}
 
-	el := factory(dto.Name, dto.Props)
+	if dto.ID != "" {
+		el.SetID(dto.ID)
+	}
+
 	loadChildren(el, dto.Children)
 	return el, nil
 }

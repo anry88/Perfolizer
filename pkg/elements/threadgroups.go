@@ -3,6 +3,7 @@ package elements
 import (
 	"context"
 	"perfolizer/pkg/core"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -180,6 +181,7 @@ func (tg *RPSThreadGroup) Start(ctx context.Context, runner core.Runner) {
 				case <-groupCtx.Done():
 					return
 				default:
+					runtime.Gosched()
 					// Execute children
 					for _, child := range tg.GetChildren() {
 						if exec, ok := child.(core.Executable); ok {

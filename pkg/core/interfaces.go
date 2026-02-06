@@ -10,6 +10,7 @@ type TestElement interface {
 	ID() string
 	Name() string
 	SetName(name string)
+	SetID(id string)
 	Clone() TestElement
 	GetChildren() []TestElement
 	AddChild(child TestElement)
@@ -61,6 +62,10 @@ func NewBaseElement(name string) BaseElement {
 
 func (b *BaseElement) ID() string {
 	return b.id
+}
+
+func (b *BaseElement) SetID(id string) {
+	b.id = id
 }
 
 func (b *BaseElement) Name() string {
