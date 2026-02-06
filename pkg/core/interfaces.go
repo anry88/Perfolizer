@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -109,6 +111,8 @@ func (b *BaseElement) Clone() TestElement {
 // In a real app we might use google/uuid or similar.
 // For now, simple timestamp based or we can add uuid dependency.
 // Let's assume we'll add uuid later or use a simple random string.
+var idCounter int64
+
 func GenerateID() string {
-	return "id_" + time.Now().Format("20060102150405.000000")
+	return fmt.Sprintf("id_%s_%d", time.Now().Format("20060102150405.000000"), atomic.AddInt64(&idCounter, 1))
 }
