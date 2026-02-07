@@ -11,7 +11,7 @@ const (
 	DefaultAgentConfigPath = "config/agent.json"
 	defaultListenHost      = "127.0.0.1"
 	defaultPort            = 9090
-	defaultPollSeconds     = 15
+	defaultPollSeconds     = 5
 )
 
 type AgentConfig struct {

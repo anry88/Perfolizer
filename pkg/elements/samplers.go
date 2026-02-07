@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"perfolizer/pkg/core"
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -61,25 +62,21 @@ func (h *HttpSampler) Execute(ctx *core.Context) error {
 
 	if targetRPS > 0 {
 		key := "Limiter_" + h.ID()
-		var limiter *rate.Limiter
-
-		// Try to retrieve existing limiter for this sampler in this thread
-		if val := ctx.GetVar(key); val != nil {
-			limiter = val.(*rate.Limiter)
-		} else {
-			// Create new
-			limiter = rate.NewLimiter(rate.Limit(targetRPS), 1)
-			ctx.SetVar(key, limiter)
-		}
+		limiter := getOrCreateLimiter(ctx, key, targetRPS)
 
 		// Check if target changed (dynamic update support)
 		if float64(limiter.Limit()) != targetRPS {
 			limiter.SetLimit(rate.Limit(targetRPS))
 		}
 
-		// Wait
-		if err := limiter.Wait(ctx); err != nil {
-			return err
+		if nonBlocking, ok := ctx.GetVar("RPSNonBlocking").(bool); ok && nonBlocking {
+			if !limiter.Allow() {
+				return nil
+			}
+		} else {
+			if err := limiter.Wait(ctx); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -128,6 +125,44 @@ func (h *HttpSampler) Execute(ctx *core.Context) error {
 	}
 
 	return nil
+}
+
+type limiterStore struct {
+	mu       sync.Mutex
+	limiters map[string]*rate.Limiter
+}
+
+func newLimiterStore() *limiterStore {
+	return &limiterStore{
+		limiters: make(map[string]*rate.Limiter),
+	}
+}
+
+func (s *limiterStore) getOrCreate(key string, targetRPS float64) *rate.Limiter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if limiter, ok := s.limiters[key]; ok {
+		return limiter
+	}
+
+	limiter := rate.NewLimiter(rate.Limit(targetRPS), 1)
+	s.limiters[key] = limiter
+	return limiter
+}
+
+func getOrCreateLimiter(ctx *core.Context, key string, targetRPS float64) *rate.Limiter {
+	if shared, ok := ctx.GetVar("SharedLimiterStore").(*limiterStore); ok && shared != nil {
+		return shared.getOrCreate(key, targetRPS)
+	}
+
+	if val := ctx.GetVar(key); val != nil {
+		return val.(*rate.Limiter)
+	}
+
+	limiter := rate.NewLimiter(rate.Limit(targetRPS), 1)
+	ctx.SetVar(key, limiter)
+	return limiter
 }
 
 // HttpSampler executes an HTTP request

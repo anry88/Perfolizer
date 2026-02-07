@@ -8,7 +8,7 @@
       "id": "id_20260207150735.007781_4",
       "name": "RPS Group",
       "props": {
-        "DurationMS": 60000,
+        "DurationMS": 300000,
         "RPS": 20,
         "Users": 10
       },
@@ -19,7 +19,7 @@
           "name": "Google",
           "props": {
             "Method": "GET",
-            "TargetRPS": 10,
+            "TargetRPS": 2,
             "Url": "https://www.google.com"
           }
         },
@@ -31,6 +31,16 @@
             "Method": "GET",
             "TargetRPS": 5,
             "Url": "https://www.facebook.com"
+          }
+        },
+        {
+          "type": "HttpSampler",
+          "id": "id_20260207155203.143198_10",
+          "name": "Yandex",
+          "props": {
+            "Method": "GET",
+            "TargetRPS": 3,
+            "Url": "https://www.yandex.com"
           }
         }
       ]
