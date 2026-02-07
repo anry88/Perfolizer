@@ -1,9 +1,11 @@
 {
   "type": "TestPlan",
+  "id": "id_20260207150735.007762_3",
   "name": "Test Plan",
   "children": [
     {
       "type": "RPSThreadGroup",
+      "id": "id_20260207150735.007781_4",
       "name": "RPS Group",
       "props": {
         "DurationMS": 60000,
@@ -13,6 +15,7 @@
       "children": [
         {
           "type": "HttpSampler",
+          "id": "id_20260207150735.007788_5",
           "name": "Google",
           "props": {
             "Method": "GET",
@@ -22,6 +25,7 @@
         },
         {
           "type": "HttpSampler",
+          "id": "id_20260207150735.007791_6",
           "name": "Facebook",
           "props": {
             "Method": "GET",
@@ -33,6 +37,7 @@
     },
     {
       "type": "SimpleThreadGroup",
+      "id": "id_20260207150735.007794_7",
       "name": "Thread Group",
       "props": {
         "Iterations": 10,
@@ -41,6 +46,7 @@
       "children": [
         {
           "type": "HttpSampler",
+          "id": "id_20260207150735.007796_8",
           "name": "Localhost",
           "props": {
             "Method": "GET",
@@ -50,6 +56,7 @@
         },
         {
           "type": "PauseController",
+          "id": "id_20260207150735.007799_9",
           "name": "Pause",
           "props": {
             "DurationMS": 5000

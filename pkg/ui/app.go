@@ -18,6 +18,9 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+const maxConsoleChars = 200000
+const maxBodyPreviewChars = 20000
+
 type PerfolizerApp struct {
 	FyneApp fyne.App
 	Window  fyne.Window
@@ -453,11 +456,14 @@ func (pa *PerfolizerApp) appendDebugLog(line string) {
 		return
 	}
 	fyne.Do(func() {
-		if pa.DebugConsole.Text == "" {
-			pa.DebugConsole.SetText(line)
-			return
+		text := line
+		if pa.DebugConsole.Text != "" {
+			text = pa.DebugConsole.Text + "\n" + line
 		}
-		pa.DebugConsole.SetText(pa.DebugConsole.Text + "\n" + line)
+		if len(text) > maxConsoleChars {
+			text = "[console output truncated]\n" + text[len(text)-maxConsoleChars:]
+		}
+		pa.DebugConsole.SetText(text)
 	})
 }
 
@@ -605,7 +611,7 @@ func formatDebugExchange(exchange core.DebugHTTPExchange) string {
 		b.WriteString("Request body:\n<empty>\n")
 	} else {
 		b.WriteString("Request body:\n")
-		b.WriteString(exchange.Request.Body)
+		b.WriteString(truncatePreview(exchange.Request.Body, maxBodyPreviewChars))
 		b.WriteString("\n")
 	}
 	if exchange.RequestBodyTruncated {
@@ -629,7 +635,7 @@ func formatDebugExchange(exchange core.DebugHTTPExchange) string {
 		b.WriteString("Response body:\n<empty>\n")
 	} else {
 		b.WriteString("Response body:\n")
-		b.WriteString(exchange.Response.Body)
+		b.WriteString(truncatePreview(exchange.Response.Body, maxBodyPreviewChars))
 		b.WriteString("\n")
 	}
 	if exchange.ResponseBodyTruncated {
@@ -662,4 +668,11 @@ func formatHeaders(headers map[string][]string) string {
 		}
 	}
 	return b.String()
+}
+
+func truncatePreview(value string, maxLen int) string {
+	if len(value) <= maxLen {
+		return value
+	}
+	return value[:maxLen] + fmt.Sprintf("\n...[truncated, %d more chars]", len(value)-maxLen)
 }
