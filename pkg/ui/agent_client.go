@@ -3,6 +3,7 @@ package ui
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -101,6 +102,38 @@ func (c *AgentClient) FetchMetrics() (map[string]core.Metric, bool, error) {
 		return nil, false, err
 	}
 	return data, running, nil
+}
+
+func (c *AgentClient) DebugHTTP(request core.DebugHTTPRequest) (core.DebugHTTPExchange, error) {
+	var exchange core.DebugHTTPExchange
+
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return exchange, fmt.Errorf("marshal debug request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/debug/http", bytes.NewReader(payload))
+	if err != nil {
+		return exchange, fmt.Errorf("create debug request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return exchange, fmt.Errorf("send debug request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		message, _ := io.ReadAll(resp.Body)
+		return exchange, fmt.Errorf("agent returned %d: %s", resp.StatusCode, strings.TrimSpace(string(message)))
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&exchange); err != nil {
+		return exchange, fmt.Errorf("decode debug response: %w", err)
+	}
+
+	return exchange, nil
 }
 
 func parsePrometheusMetrics(r io.Reader) (map[string]core.Metric, bool, error) {

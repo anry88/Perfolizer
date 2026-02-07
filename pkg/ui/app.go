@@ -3,24 +3,34 @@ package ui
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"perfolizer/pkg/core"
 	"perfolizer/pkg/elements"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
+const maxDebugItems = 150
+const maxBodyPreviewChars = 20000
+
 type PerfolizerApp struct {
 	FyneApp fyne.App
 	Window  fyne.Window
 	Tree    *widget.Tree
 	Content *fyne.Container
+
+	DebugConsoleList   *fyne.Container
+	DebugConsoleScroll *container.Scroll
 
 	TestPlan      core.TestElement // Root of the plan
 	CurrentNodeID string
@@ -29,8 +39,9 @@ type PerfolizerApp struct {
 	agentInitError error
 	pollInterval   time.Duration
 
-	cancelFunc context.CancelFunc
-	isRunning  bool
+	cancelFunc     context.CancelFunc
+	isRunning      bool
+	isDebugRunning bool
 }
 
 func NewPerfolizerApp() *PerfolizerApp {
@@ -122,6 +133,20 @@ func (pa *PerfolizerApp) setupUI() {
 		}
 	}
 
+	debugConsoleList := container.NewVBox()
+	debugConsoleScroll := container.NewVScroll(debugConsoleList)
+	pa.DebugConsoleList = debugConsoleList
+	pa.DebugConsoleScroll = debugConsoleScroll
+
+	clearDebugButton := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() {
+		pa.clearDebugConsole()
+	})
+	debugPanel := container.NewBorder(
+		container.NewBorder(nil, nil, widget.NewLabel("Debug Console"), clearDebugButton, nil),
+		nil, nil, nil,
+		container.NewPadded(debugConsoleScroll),
+	)
+
 	// 2. Toolbar (Top)
 	toolbar := widget.NewToolbar(
 		widget.NewToolbarAction(theme.ContentAddIcon(), func() { pa.addElement() }),       // Add
@@ -130,14 +155,18 @@ func (pa *PerfolizerApp) setupUI() {
 		widget.NewToolbarAction(theme.FolderOpenIcon(), func() { pa.loadTestPlan() }),
 		widget.NewToolbarAction(theme.DocumentSaveIcon(), func() { pa.saveTestPlan() }),
 		widget.NewToolbarSpacer(),
-		widget.NewToolbarAction(theme.MediaPlayIcon(), func() { pa.runTest() }),  // Start
-		widget.NewToolbarAction(theme.MediaStopIcon(), func() { pa.stopTest() }), // Stop
+		widget.NewToolbarAction(theme.MediaPlayIcon(), func() { pa.runTest() }),          // Start
+		widget.NewToolbarAction(theme.SearchReplaceIcon(), func() { pa.runDebugTest() }), // Debug
+		widget.NewToolbarAction(theme.MediaStopIcon(), func() { pa.stopTest() }),         // Stop
 	)
 
 	// 3. Layout
+	rightSplit := container.NewVSplit(pa.Content, debugPanel)
+	rightSplit.SetOffset(0.62)
+
 	split := container.NewHSplit(
 		container.NewBorder(nil, nil, nil, nil, pa.Tree),
-		pa.Content,
+		rightSplit,
 	)
 	split.SetOffset(0.3)
 
@@ -193,8 +222,14 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 			}
 		}
 
+		bodyEntry := widget.NewMultiLineEntry()
+		bodyEntry.SetMinRowsVisible(4)
+		bodyEntry.SetText(v.Body)
+		bodyEntry.OnChanged = func(s string) { v.Body = s }
+
 		form.Append("URL", urlEntry)
 		form.Append("Method", methodEntry)
+		form.Append("Body", bodyEntry)
 		form.Append("Target RPS (0 = default)", rpsEntry)
 
 	case *elements.SimpleThreadGroup:
@@ -345,6 +380,96 @@ func (pa *PerfolizerApp) runTest() {
 	go pa.pollAgentMetrics(ctx, dashboard)
 }
 
+func (pa *PerfolizerApp) runDebugTest() {
+	if pa.isDebugRunning {
+		return
+	}
+
+	if pa.agentInitError != nil {
+		dialog.ShowError(fmt.Errorf("agent config error: %w", pa.agentInitError), pa.Window)
+		return
+	}
+	if pa.agentClient == nil {
+		dialog.ShowError(fmt.Errorf("agent client is not configured"), pa.Window)
+		return
+	}
+
+	samplers := make([]*elements.HttpSampler, 0)
+	pa.collectHTTPSamplers(pa.TestPlan, &samplers)
+	if len(samplers) == 0 {
+		dialog.ShowInformation("Debug run", "No HTTP samplers found in the test plan.", pa.Window)
+		return
+	}
+
+	pa.isDebugRunning = true
+	pa.clearDebugConsole()
+	pa.appendDebugInfo(fmt.Sprintf("Debug run started at %s", time.Now().Format(time.RFC3339)))
+	pa.appendDebugInfo(fmt.Sprintf("Requests to execute once: %d", len(samplers)))
+
+	go pa.executeDebugRun(samplers)
+}
+
+func (pa *PerfolizerApp) executeDebugRun(samplers []*elements.HttpSampler) {
+	for i, sampler := range samplers {
+		exchange, err := pa.agentClient.DebugHTTP(core.DebugHTTPRequest{
+			Method: sampler.Method,
+			URL:    sampler.Url,
+			Body:   sampler.Body,
+		})
+		pa.appendDebugSamplerCard(i+1, len(samplers), sampler, &exchange, err)
+	}
+
+	pa.appendDebugInfo(fmt.Sprintf("Debug run finished at %s", time.Now().Format(time.RFC3339)))
+
+	fyne.Do(func() {
+		pa.isDebugRunning = false
+	})
+}
+
+func (pa *PerfolizerApp) collectHTTPSamplers(root core.TestElement, out *[]*elements.HttpSampler) {
+	if sampler, ok := root.(*elements.HttpSampler); ok {
+		*out = append(*out, sampler)
+	}
+	for _, child := range root.GetChildren() {
+		pa.collectHTTPSamplers(child, out)
+	}
+}
+
+func (pa *PerfolizerApp) clearDebugConsole() {
+	if pa.DebugConsoleList == nil {
+		return
+	}
+	fyne.Do(func() {
+		pa.DebugConsoleList.Objects = nil
+		pa.DebugConsoleList.Refresh()
+	})
+}
+
+func (pa *PerfolizerApp) appendDebugInfo(line string) {
+	info := widget.NewRichText(
+		&widget.TextSegment{
+			Text: line,
+			Style: widget.RichTextStyle{
+				ColorName: theme.ColorNameForeground,
+			},
+		},
+	)
+	pa.appendDebugItem(info)
+}
+
+func (pa *PerfolizerApp) appendDebugItem(item fyne.CanvasObject) {
+	if pa.DebugConsoleList == nil {
+		return
+	}
+	fyne.Do(func() {
+		pa.DebugConsoleList.Add(item)
+		if len(pa.DebugConsoleList.Objects) > maxDebugItems {
+			pa.DebugConsoleList.Objects = pa.DebugConsoleList.Objects[len(pa.DebugConsoleList.Objects)-maxDebugItems:]
+		}
+		pa.DebugConsoleList.Refresh()
+	})
+}
+
 func (pa *PerfolizerApp) stopTest() {
 	if pa.cancelFunc != nil {
 		pa.cancelFunc()
@@ -476,4 +601,157 @@ func (pa *PerfolizerApp) removeElement() {
 		pa.Content.Refresh()
 		pa.CurrentNodeID = "" // Clear selection
 	}
+}
+
+func (pa *PerfolizerApp) appendDebugSamplerCard(index, total int, sampler *elements.HttpSampler, exchange *core.DebugHTTPExchange, agentErr error) {
+	requestMethod := sampler.Method
+	requestURL := sampler.Url
+	requestBody := sampler.Body
+	duration := "-"
+	outgoingHeaders := "<empty>"
+	incomingHeaders := "<empty>"
+	responseBody := "<empty>"
+	statusText := "FAILED"
+	statusColor := theme.ColorNameError
+	errorText := ""
+	success := false
+
+	if exchange != nil {
+		if exchange.Request.Method != "" {
+			requestMethod = exchange.Request.Method
+		}
+		if exchange.Request.URL != "" {
+			requestURL = exchange.Request.URL
+		}
+		if exchange.Request.Body != "" {
+			requestBody = exchange.Request.Body
+		}
+		if exchange.DurationMilliseconds > 0 {
+			duration = fmt.Sprintf("%d ms", exchange.DurationMilliseconds)
+		}
+		outgoingHeaders = formatHeadersText(exchange.Request.Headers)
+		if exchange.RequestBodyTruncated {
+			requestBody = truncatePreview(requestBody, maxBodyPreviewChars)
+		}
+		if exchange.Error != "" {
+			errorText = exchange.Error
+		}
+		if exchange.Response != nil {
+			statusText = fmt.Sprintf("%d (%s)", exchange.Response.StatusCode, exchange.Response.Status)
+			incomingHeaders = formatHeadersText(exchange.Response.Headers)
+			if exchange.Response.Body != "" {
+				responseBody = exchange.Response.Body
+			}
+			if exchange.ResponseBodyTruncated {
+				responseBody = truncatePreview(responseBody, maxBodyPreviewChars)
+			}
+			success = exchange.Response.StatusCode >= 200 && exchange.Response.StatusCode < 400
+		}
+	}
+
+	if requestBody == "" {
+		requestBody = "<empty>"
+	} else {
+		requestBody = truncatePreview(requestBody, maxBodyPreviewChars)
+	}
+	if responseBody != "<empty>" {
+		responseBody = truncatePreview(responseBody, maxBodyPreviewChars)
+	}
+	if agentErr != nil {
+		errorText = agentErr.Error()
+	}
+	if success {
+		statusColor = theme.ColorNameSuccess
+	}
+
+	segments := make([]widget.RichTextSegment, 0, 28)
+
+	appendSegment := func(text string, colorName fyne.ThemeColorName, textStyle fyne.TextStyle) {
+		segments = append(segments, &widget.TextSegment{
+			Text: text,
+			Style: widget.RichTextStyle{
+				ColorName: colorName,
+				TextStyle: textStyle,
+			},
+		})
+	}
+	appendField := func(name, value string) {
+		appendSegment(name+": ", theme.ColorNamePrimary, fyne.TextStyle{Bold: true})
+		appendSegment(value+"\n", theme.ColorNameForeground, fyne.TextStyle{Monospace: true})
+	}
+	appendBlockField := func(name, value string) {
+		appendSegment(name+":\n", theme.ColorNamePrimary, fyne.TextStyle{Bold: true})
+		appendSegment(value+"\n\n", theme.ColorNameForeground, fyne.TextStyle{Monospace: true})
+	}
+
+	appendSegment(fmt.Sprintf("[%d/%d] Sampler: %s\n", index, total, sampler.Name()), theme.ColorNamePrimary, fyne.TextStyle{Bold: true})
+	appendField("Request", fmt.Sprintf("%s %s", requestMethod, requestURL))
+	appendField("Duration", duration)
+	appendBlockField("Outgoing headers", outgoingHeaders)
+	appendBlockField("Request body", requestBody)
+	appendSegment("Status: ", theme.ColorNamePrimary, fyne.TextStyle{Bold: true})
+	appendSegment(statusText+"\n", statusColor, fyne.TextStyle{Bold: true, Monospace: true})
+	appendBlockField("Incoming headers", incomingHeaders)
+	appendBlockField("Response body", responseBody)
+
+	if errorText != "" {
+		appendSegment("Error: ", theme.ColorNamePrimary, fyne.TextStyle{Bold: true})
+		appendSegment(errorText+"\n", theme.ColorNameError, fyne.TextStyle{Monospace: true})
+	}
+
+	logText := widget.NewRichText(segments...)
+	logText.Wrapping = fyne.TextWrapWord
+
+	borderColor := theme.Color(theme.ColorNameSeparator)
+	if !success || errorText != "" {
+		borderColor = theme.Color(theme.ColorNameError)
+	}
+
+	background := canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground))
+	background.CornerRadius = 6
+
+	border := canvas.NewRectangle(color.Transparent)
+	border.StrokeColor = borderColor
+	border.StrokeWidth = 2
+	border.CornerRadius = 6
+
+	card := container.NewStack(
+		background,
+		border,
+		container.NewPadded(logText),
+	)
+
+	pa.appendDebugItem(container.NewPadded(card))
+}
+
+func formatHeadersText(headers map[string][]string) string {
+	if len(headers) == 0 {
+		return "<empty>"
+	}
+
+	keys := make([]string, 0, len(headers))
+	for key := range headers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	for _, key := range keys {
+		values := headers[key]
+		if len(values) == 0 {
+			fmt.Fprintf(&b, "%s:\n", key)
+			continue
+		}
+		for _, value := range values {
+			fmt.Fprintf(&b, "%s: %s\n", key, value)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func truncatePreview(value string, maxLen int) string {
+	if len(value) <= maxLen {
+		return value
+	}
+	return value[:maxLen] + fmt.Sprintf("\n...[truncated, %d more chars]", len(value)-maxLen)
 }
