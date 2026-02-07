@@ -160,6 +160,7 @@ func (tg *RPSThreadGroup) Start(ctx context.Context, runner core.Runner) {
 	// Create a context that expires after Duration
 	groupCtx, cancel := context.WithTimeout(ctx, tg.Duration)
 	defer cancel()
+	sharedLimiters := newLimiterStore()
 
 	var wg sync.WaitGroup
 	wg.Add(tg.Users)
@@ -174,6 +175,10 @@ func (tg *RPSThreadGroup) Start(ctx context.Context, runner core.Runner) {
 			tCtx.SetVar("Reporter", runner)
 			// Inject DefaultRPS for children to inherit if they don't have one
 			tCtx.SetVar("DefaultRPS", tg.RPS)
+			// RPS Thread Group uses shared, non-blocking limiter checks so each sampler
+			// can run at its own rate without being stalled by slower siblings.
+			tCtx.SetVar("SharedLimiterStore", sharedLimiters)
+			tCtx.SetVar("RPSNonBlocking", true)
 
 			// Loop until timeout or cancellation
 			for {
