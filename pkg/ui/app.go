@@ -2,10 +2,10 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"perfolizer/pkg/core"
 	"perfolizer/pkg/elements"
 	"strconv"
-	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -25,6 +25,10 @@ type PerfolizerApp struct {
 	TestPlan      core.TestElement // Root of the plan
 	CurrentNodeID string
 
+	agentClient    *AgentClient
+	agentInitError error
+	pollInterval   time.Duration
+
 	cancelFunc context.CancelFunc
 	isRunning  bool
 }
@@ -34,10 +38,20 @@ func NewPerfolizerApp() *PerfolizerApp {
 	w := a.NewWindow("Perfolizer")
 	w.Resize(fyne.NewSize(1024, 768))
 
+	agentClient, cfg, cfgErr := NewAgentClientFromConfig()
+	pollInterval := 15 * time.Second
+	if cfg.UIPollIntervalSec > 0 {
+		pollInterval = time.Duration(cfg.UIPollIntervalSec) * time.Second
+	}
+
 	pa := &PerfolizerApp{
 		FyneApp: a,
 		Window:  w,
 		Content: container.NewMax(widget.NewLabel("Select a node to edit")),
+
+		agentClient:    agentClient,
+		agentInitError: cfgErr,
+		pollInterval:   pollInterval,
 	}
 
 	pa.setupTestPlan()
@@ -116,13 +130,8 @@ func (pa *PerfolizerApp) setupUI() {
 		widget.NewToolbarAction(theme.FolderOpenIcon(), func() { pa.loadTestPlan() }),
 		widget.NewToolbarAction(theme.DocumentSaveIcon(), func() { pa.saveTestPlan() }),
 		widget.NewToolbarSpacer(),
-		widget.NewToolbarAction(theme.MediaPlayIcon(), func() { pa.runTest() }), // Start
-		widget.NewToolbarAction(theme.MediaStopIcon(), func() {
-			if pa.cancelFunc != nil {
-				pa.cancelFunc()
-				pa.cancelFunc = nil
-			}
-		}), // Stop
+		widget.NewToolbarAction(theme.MediaPlayIcon(), func() { pa.runTest() }),  // Start
+		widget.NewToolbarAction(theme.MediaStopIcon(), func() { pa.stopTest() }), // Stop
 	)
 
 	// 3. Layout
@@ -305,6 +314,26 @@ func (pa *PerfolizerApp) runTest() {
 	if pa.isRunning {
 		return
 	}
+
+	if pa.agentInitError != nil {
+		dialog.ShowError(fmt.Errorf("agent config error: %w", pa.agentInitError), pa.Window)
+		return
+	}
+	if pa.agentClient == nil {
+		dialog.ShowError(fmt.Errorf("agent client is not configured"), pa.Window)
+		return
+	}
+
+	if err := pa.agentClient.RunTest(pa.TestPlan); err != nil {
+		dialog.ShowError(err, pa.Window)
+		return
+	}
+
+	if pa.cancelFunc != nil {
+		pa.cancelFunc()
+		pa.cancelFunc = nil
+	}
+
 	pa.isRunning = true
 
 	dashboard := NewDashboardWindow(pa.FyneApp)
@@ -313,33 +342,55 @@ func (pa *PerfolizerApp) runTest() {
 	ctx, cancel := context.WithCancel(context.Background())
 	pa.cancelFunc = cancel
 
-	runner := core.NewStatsRunner(ctx, func(data map[string]core.Metric) {
-		dashboard.Update(data)
-	})
+	go pa.pollAgentMetrics(ctx, dashboard)
+}
 
-	go func() {
-		defer cancel() // Stop stats runner
-		defer func() {
-			pa.isRunning = false
-			pa.cancelFunc = nil
-		}()
+func (pa *PerfolizerApp) stopTest() {
+	if pa.cancelFunc != nil {
+		pa.cancelFunc()
+		pa.cancelFunc = nil
+	}
+	pa.isRunning = false
 
-		// Find all thread groups and execute them
-		children := pa.TestPlan.GetChildren()
+	if pa.agentClient == nil {
+		return
+	}
 
-		var wg sync.WaitGroup
+	if err := pa.agentClient.StopTest(); err != nil {
+		dialog.ShowError(err, pa.Window)
+	}
+}
 
-		for _, child := range children {
-			if tg, ok := child.(core.ThreadGroup); ok {
-				wg.Add(1)
-				go func(t core.ThreadGroup) {
-					defer wg.Done()
-					t.Start(ctx, runner)
-				}(tg)
-			}
+func (pa *PerfolizerApp) pollAgentMetrics(ctx context.Context, dashboard *DashboardWindow) {
+	pa.pollOnce(dashboard)
+
+	ticker := time.NewTicker(pa.pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pa.pollOnce(dashboard)
 		}
-		wg.Wait()
-	}()
+	}
+}
+
+func (pa *PerfolizerApp) pollOnce(dashboard *DashboardWindow) {
+	data, running, err := pa.agentClient.FetchMetrics()
+	if err != nil {
+		return
+	}
+
+	dashboard.Update(data)
+	if !running {
+		pa.isRunning = false
+		if pa.cancelFunc != nil {
+			pa.cancelFunc()
+			pa.cancelFunc = nil
+		}
+	}
 }
 
 // Helper to find parent of a node (DFS)
