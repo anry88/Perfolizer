@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -18,16 +19,13 @@ type TestElementDTO struct {
 }
 
 func SaveTestPlan(path string, root TestElement) error {
-	dto := toDTO(root)
 	file, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(dto)
+	return WriteTestPlan(file, root, true)
 }
 
 func LoadTestPlan(path string) (TestElement, error) {
@@ -37,11 +35,37 @@ func LoadTestPlan(path string) (TestElement, error) {
 	}
 	defer file.Close()
 
+	return ReadTestPlan(file)
+}
+
+func WriteTestPlan(w io.Writer, root TestElement, pretty bool) error {
+	dto := toDTO(root)
+
+	encoder := json.NewEncoder(w)
+	if pretty {
+		encoder.SetIndent("", "  ")
+	}
+	return encoder.Encode(dto)
+}
+
+func ReadTestPlan(r io.Reader) (TestElement, error) {
 	var dto TestElementDTO
-	if err := json.NewDecoder(file).Decode(&dto); err != nil {
+	if err := json.NewDecoder(r).Decode(&dto); err != nil {
 		return nil, err
 	}
+	return fromDTO(dto)
+}
 
+func MarshalTestPlan(root TestElement) ([]byte, error) {
+	dto := toDTO(root)
+	return json.Marshal(dto)
+}
+
+func UnmarshalTestPlan(data []byte) (TestElement, error) {
+	var dto TestElementDTO
+	if err := json.Unmarshal(data, &dto); err != nil {
+		return nil, err
+	}
 	return fromDTO(dto)
 }
 
@@ -52,29 +76,14 @@ func toDTO(el TestElement) TestElementDTO {
 		Children: make([]TestElementDTO, 0),
 	}
 
-	// Determine type and specific props
-	// This implies we need run-time type switching or an interface method `ToDTO`.
-	// Since we are external to the specific types (in core, but types are in elements?),
-	// actually `elements` depends on `core`. Only `core` types are visible here.
-	// But `SimpleThreadGroup` etc are in `elements`.
-	// PROBLEM: `core` cannot import `elements` (cycle).
-	// SOLUTION: We should move `Save/Load` logic to a layer that sees both, OR `elements` types implement `Serializable` interface defined in `core`.
-	// Let's define `Serializable` in `core`.
-
-	// Actually, for MVP, keeping DTO logic in `core` but using a registry or Map-based properties is easier.
-	// BUT we need to know the struct fields.
-	// Let's rely on `Serializable` interface.
-
-	// Attempt 2: Use an interface method.
 	if s, ok := el.(Serializable); ok {
 		dto.Type = s.GetType()
 		dto.Props = s.GetProps()
 	} else {
-		// Fallback or error? For BaseElement (Test Plan)
-		dto.Type = "TestPlan" // Default
+		dto.Type = "TestPlan"
 	}
 
-	dto.ID = el.ID() // Save ID
+	dto.ID = el.ID()
 
 	for _, child := range el.GetChildren() {
 		dto.Children = append(dto.Children, toDTO(child))
@@ -84,14 +93,11 @@ func toDTO(el TestElement) TestElementDTO {
 }
 
 func fromDTO(dto TestElementDTO) (TestElement, error) {
-	// We need a Factory.
-	// Since `core` cannot know about `elements`, we need a registered factory.
 	factory := GetFactory(dto.Type)
 	var el TestElement
 
 	if factory == nil {
 		if dto.Type == "TestPlan" {
-			// Special case for root
 			e := NewBaseElement(dto.Name)
 			el = &e
 		} else {
@@ -150,7 +156,6 @@ func GetString(props map[string]interface{}, key string, def string) string {
 
 func GetInt(props map[string]interface{}, key string, def int) int {
 	if v, ok := props[key]; ok {
-		// JSON numbers are float64
 		if f, ok := v.(float64); ok {
 			return int(f)
 		}

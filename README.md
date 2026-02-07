@@ -2,6 +2,12 @@
 
 Perfolizer is a lightweight, JMeter-like load testing tool written in Golang. It provides a native GUI for creating and running performance tests using a tree-based structure, similar to JMeter, but powered by the efficiency of Go.
 
+## Architecture
+
+- **UI process (`cmd/perfolizer`)**: builds/edits test plans and visualizes runtime metrics.
+- **Agent process (`cmd/agent`)**: executes tests in a separate process and exposes Prometheus metrics.
+- **Decoupling**: UI remains responsive and independent from test execution lifecycle.
+
 ## Features
 
 -   **Pure Golang**: Built with Go for high performance and easy compilation.
@@ -17,6 +23,9 @@ Perfolizer is a lightweight, JMeter-like load testing tool written in Golang. It
     -   **If Controller**: Conditionally execute children.
     -   **Pause Controller**: Add delays between actions.
 -   **Live Monitoring**: (In Progress) View test progress and structure.
+-   **Remote Agent Execution**: Test plans are sent from UI to a separate agent process.
+-   **Prometheus Metrics**: Agent exposes `/metrics` with RPS, latency, errors, and totals.
+-   **Polling Dashboard**: UI fetches agent metrics every 15 seconds and updates charts.
 
 ## Prerequisites
 
@@ -48,6 +57,37 @@ Perfolizer is a lightweight, JMeter-like load testing tool written in Golang. It
 
 ### Running the GUI
 
+1. Start the agent in a separate process:
+   ```bash
+   go run cmd/agent/main.go
+   ```
+
+2. Start the GUI:
+   ```bash
+   go run cmd/perfolizer/main.go
+   ```
+
+### Agent Configuration
+
+Default config file: `config/agent.json`
+
+```json
+{
+  "listen_host": "127.0.0.1",
+  "port": 9090,
+  "ui_poll_interval_seconds": 15
+}
+```
+
+You can override config path with:
+```bash
+PERFOLIZER_AGENT_CONFIG=/path/to/agent.json go run cmd/agent/main.go
+```
+
+The same config is used by UI client to connect to the agent.
+
+### Legacy GUI-only start
+
 To start the graphical interface:
 
 ```bash
@@ -67,6 +107,9 @@ go run cmd/perfolizer/main.go
 ## Project Structure
 
 -   `cmd/perfolizer`: Entry point (Main application).
+-   `cmd/agent`: Agent entry point (HTTP API for test execution + `/metrics`).
 -   `pkg/core`: Core engine interfaces (`TestElement`, `Sampler`, `Context`).
 -   `pkg/elements`: Implementation of components (Thread Groups, HttpSampler, Controllers).
 -   `pkg/ui`: Fyne-based GUI implementation.
+-   `pkg/agent`: Runtime execution agent and Prometheus exporter.
+-   `pkg/config`: Shared configuration loader for agent/UI connectivity.
