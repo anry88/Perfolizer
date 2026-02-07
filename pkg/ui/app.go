@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"perfolizer/pkg/core"
 	"perfolizer/pkg/elements"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -22,6 +24,8 @@ type PerfolizerApp struct {
 	Tree    *widget.Tree
 	Content *fyne.Container
 
+	DebugConsole *widget.Entry
+
 	TestPlan      core.TestElement // Root of the plan
 	CurrentNodeID string
 
@@ -29,8 +33,9 @@ type PerfolizerApp struct {
 	agentInitError error
 	pollInterval   time.Duration
 
-	cancelFunc context.CancelFunc
-	isRunning  bool
+	cancelFunc     context.CancelFunc
+	isRunning      bool
+	isDebugRunning bool
 }
 
 func NewPerfolizerApp() *PerfolizerApp {
@@ -122,6 +127,21 @@ func (pa *PerfolizerApp) setupUI() {
 		}
 	}
 
+	debugConsole := widget.NewMultiLineEntry()
+	debugConsole.Disable()
+	debugConsole.SetMinRowsVisible(12)
+	debugConsole.SetPlaceHolder("Debug request logs will appear here.")
+	pa.DebugConsole = debugConsole
+
+	clearDebugButton := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() {
+		pa.clearDebugConsole()
+	})
+	debugPanel := container.NewBorder(
+		container.NewBorder(nil, nil, widget.NewLabel("Debug Console"), clearDebugButton, nil),
+		nil, nil, nil,
+		container.NewPadded(debugConsole),
+	)
+
 	// 2. Toolbar (Top)
 	toolbar := widget.NewToolbar(
 		widget.NewToolbarAction(theme.ContentAddIcon(), func() { pa.addElement() }),       // Add
@@ -130,14 +150,18 @@ func (pa *PerfolizerApp) setupUI() {
 		widget.NewToolbarAction(theme.FolderOpenIcon(), func() { pa.loadTestPlan() }),
 		widget.NewToolbarAction(theme.DocumentSaveIcon(), func() { pa.saveTestPlan() }),
 		widget.NewToolbarSpacer(),
-		widget.NewToolbarAction(theme.MediaPlayIcon(), func() { pa.runTest() }),  // Start
-		widget.NewToolbarAction(theme.MediaStopIcon(), func() { pa.stopTest() }), // Stop
+		widget.NewToolbarAction(theme.MediaPlayIcon(), func() { pa.runTest() }),          // Start
+		widget.NewToolbarAction(theme.SearchReplaceIcon(), func() { pa.runDebugTest() }), // Debug
+		widget.NewToolbarAction(theme.MediaStopIcon(), func() { pa.stopTest() }),         // Stop
 	)
 
 	// 3. Layout
+	rightSplit := container.NewVSplit(pa.Content, debugPanel)
+	rightSplit.SetOffset(0.62)
+
 	split := container.NewHSplit(
 		container.NewBorder(nil, nil, nil, nil, pa.Tree),
-		pa.Content,
+		rightSplit,
 	)
 	split.SetOffset(0.3)
 
@@ -193,8 +217,14 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 			}
 		}
 
+		bodyEntry := widget.NewMultiLineEntry()
+		bodyEntry.SetMinRowsVisible(4)
+		bodyEntry.SetText(v.Body)
+		bodyEntry.OnChanged = func(s string) { v.Body = s }
+
 		form.Append("URL", urlEntry)
 		form.Append("Method", methodEntry)
+		form.Append("Body", bodyEntry)
 		form.Append("Target RPS (0 = default)", rpsEntry)
 
 	case *elements.SimpleThreadGroup:
@@ -345,6 +375,92 @@ func (pa *PerfolizerApp) runTest() {
 	go pa.pollAgentMetrics(ctx, dashboard)
 }
 
+func (pa *PerfolizerApp) runDebugTest() {
+	if pa.isDebugRunning {
+		return
+	}
+
+	if pa.agentInitError != nil {
+		dialog.ShowError(fmt.Errorf("agent config error: %w", pa.agentInitError), pa.Window)
+		return
+	}
+	if pa.agentClient == nil {
+		dialog.ShowError(fmt.Errorf("agent client is not configured"), pa.Window)
+		return
+	}
+
+	samplers := make([]*elements.HttpSampler, 0)
+	pa.collectHTTPSamplers(pa.TestPlan, &samplers)
+	if len(samplers) == 0 {
+		dialog.ShowInformation("Debug run", "No HTTP samplers found in the test plan.", pa.Window)
+		return
+	}
+
+	pa.isDebugRunning = true
+	pa.clearDebugConsole()
+	pa.appendDebugLog(fmt.Sprintf("Debug run started at %s", time.Now().Format(time.RFC3339)))
+	pa.appendDebugLog(fmt.Sprintf("Requests to execute once: %d", len(samplers)))
+
+	go pa.executeDebugRun(samplers)
+}
+
+func (pa *PerfolizerApp) executeDebugRun(samplers []*elements.HttpSampler) {
+	for i, sampler := range samplers {
+		pa.appendDebugLog("")
+		pa.appendDebugLog(fmt.Sprintf("[%d/%d] Sampler: %s", i+1, len(samplers), sampler.Name()))
+
+		exchange, err := pa.agentClient.DebugHTTP(core.DebugHTTPRequest{
+			Method: sampler.Method,
+			URL:    sampler.Url,
+			Body:   sampler.Body,
+		})
+		if err != nil {
+			pa.appendDebugLog(fmt.Sprintf("Agent call failed: %v", err))
+			continue
+		}
+
+		pa.appendDebugLog(formatDebugExchange(exchange))
+	}
+
+	pa.appendDebugLog("")
+	pa.appendDebugLog(fmt.Sprintf("Debug run finished at %s", time.Now().Format(time.RFC3339)))
+
+	fyne.Do(func() {
+		pa.isDebugRunning = false
+	})
+}
+
+func (pa *PerfolizerApp) collectHTTPSamplers(root core.TestElement, out *[]*elements.HttpSampler) {
+	if sampler, ok := root.(*elements.HttpSampler); ok {
+		*out = append(*out, sampler)
+	}
+	for _, child := range root.GetChildren() {
+		pa.collectHTTPSamplers(child, out)
+	}
+}
+
+func (pa *PerfolizerApp) clearDebugConsole() {
+	if pa.DebugConsole == nil {
+		return
+	}
+	fyne.Do(func() {
+		pa.DebugConsole.SetText("")
+	})
+}
+
+func (pa *PerfolizerApp) appendDebugLog(line string) {
+	if pa.DebugConsole == nil {
+		return
+	}
+	fyne.Do(func() {
+		if pa.DebugConsole.Text == "" {
+			pa.DebugConsole.SetText(line)
+			return
+		}
+		pa.DebugConsole.SetText(pa.DebugConsole.Text + "\n" + line)
+	})
+}
+
 func (pa *PerfolizerApp) stopTest() {
 	if pa.cancelFunc != nil {
 		pa.cancelFunc()
@@ -476,4 +592,74 @@ func (pa *PerfolizerApp) removeElement() {
 		pa.Content.Refresh()
 		pa.CurrentNodeID = "" // Clear selection
 	}
+}
+
+func formatDebugExchange(exchange core.DebugHTTPExchange) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "Request: %s %s\n", exchange.Request.Method, exchange.Request.URL)
+	fmt.Fprintf(&b, "Duration: %d ms\n", exchange.DurationMilliseconds)
+	b.WriteString("Outgoing headers:\n")
+	b.WriteString(formatHeaders(exchange.Request.Headers))
+	if exchange.Request.Body == "" {
+		b.WriteString("Request body:\n<empty>\n")
+	} else {
+		b.WriteString("Request body:\n")
+		b.WriteString(exchange.Request.Body)
+		b.WriteString("\n")
+	}
+	if exchange.RequestBodyTruncated {
+		b.WriteString("Request body is truncated.\n")
+	}
+
+	if exchange.Error != "" {
+		fmt.Fprintf(&b, "Error: %s\n", exchange.Error)
+		return strings.TrimRight(b.String(), "\n")
+	}
+
+	if exchange.Response == nil {
+		b.WriteString("No response from agent.\n")
+		return strings.TrimRight(b.String(), "\n")
+	}
+
+	fmt.Fprintf(&b, "Status: %d (%s)\n", exchange.Response.StatusCode, exchange.Response.Status)
+	b.WriteString("Incoming headers:\n")
+	b.WriteString(formatHeaders(exchange.Response.Headers))
+	if exchange.Response.Body == "" {
+		b.WriteString("Response body:\n<empty>\n")
+	} else {
+		b.WriteString("Response body:\n")
+		b.WriteString(exchange.Response.Body)
+		b.WriteString("\n")
+	}
+	if exchange.ResponseBodyTruncated {
+		b.WriteString("Response body is truncated.\n")
+	}
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatHeaders(headers map[string][]string) string {
+	if len(headers) == 0 {
+		return "<empty>\n"
+	}
+
+	keys := make([]string, 0, len(headers))
+	for key := range headers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	for _, key := range keys {
+		values := headers[key]
+		if len(values) == 0 {
+			fmt.Fprintf(&b, "%s: \n", key)
+			continue
+		}
+		for _, value := range values {
+			fmt.Fprintf(&b, "%s: %s\n", key, value)
+		}
+	}
+	return b.String()
 }

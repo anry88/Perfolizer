@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,9 +14,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const maxPlanBodyBytes = 10 << 20 // 10 MiB
+const maxDebugPayloadBytes = 2 << 20
+const maxDebugBodyBytes = 1 << 20 // 1 MiB
 
 var ErrAlreadyRunning = errors.New("test is already running")
 
@@ -24,10 +29,16 @@ type Server struct {
 	running bool
 	cancel  context.CancelFunc
 	stats   *core.StatsRunner
+
+	httpClient *http.Client
 }
 
 func NewServer() *Server {
-	return &Server{}
+	return &Server{
+		httpClient: &http.Client{
+			Timeout: 60 * time.Second,
+		},
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -35,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/run", s.handleRun)
 	mux.HandleFunc("/stop", s.handleStop)
 	mux.HandleFunc("/metrics", s.handleMetrics)
+	mux.HandleFunc("/debug/http", s.handleDebugHTTP)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	return mux
 }
@@ -172,6 +184,117 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+func (s *Server) handleDebugHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxDebugPayloadBytes)
+	defer r.Body.Close()
+
+	var debugReq core.DebugHTTPRequest
+	if err := json.NewDecoder(r.Body).Decode(&debugReq); err != nil {
+		http.Error(w, fmt.Sprintf("invalid debug request payload: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	method := strings.ToUpper(strings.TrimSpace(debugReq.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+
+	exchange := core.DebugHTTPExchange{
+		Request: core.DebugHTTPRequest{
+			Method: method,
+			URL:    debugReq.URL,
+		},
+	}
+
+	requestBody := trimBody(debugReq.Body, maxDebugBodyBytes)
+	exchange.Request.Body = requestBody.body
+	exchange.RequestBodyTruncated = requestBody.truncated
+
+	req, err := http.NewRequest(method, debugReq.URL, bytes.NewBufferString(requestBody.body))
+	if err != nil {
+		exchange.Error = err.Error()
+		writeDebugJSON(w, http.StatusOK, exchange)
+		return
+	}
+
+	for key, values := range debugReq.Headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+	exchange.Request.Headers = cloneHeaders(req.Header)
+
+	started := time.Now()
+	resp, err := s.httpClient.Do(req)
+	exchange.DurationMilliseconds = time.Since(started).Milliseconds()
+	if err != nil {
+		exchange.Error = err.Error()
+		writeDebugJSON(w, http.StatusOK, exchange)
+		return
+	}
+	defer resp.Body.Close()
+
+	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxDebugBodyBytes+1))
+	if readErr != nil {
+		exchange.Error = readErr.Error()
+		writeDebugJSON(w, http.StatusOK, exchange)
+		return
+	}
+
+	exchange.Response = &core.DebugHTTPResponse{
+		StatusCode: resp.StatusCode,
+		Status:     resp.Status,
+		Headers:    cloneHeaders(resp.Header),
+		Body:       string(responseBody),
+	}
+
+	if len(responseBody) > maxDebugBodyBytes {
+		exchange.ResponseBodyTruncated = true
+		exchange.Response.Body = string(responseBody[:maxDebugBodyBytes])
+	}
+
+	writeDebugJSON(w, http.StatusOK, exchange)
+}
+
+func writeDebugJSON(w http.ResponseWriter, status int, payload core.DebugHTTPExchange) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func cloneHeaders(headers map[string][]string) map[string][]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(headers))
+	for key, values := range headers {
+		cp := make([]string, len(values))
+		copy(cp, values)
+		out[key] = cp
+	}
+	return out
+}
+
+type bodySlice struct {
+	body      string
+	truncated bool
+}
+
+func trimBody(body string, maxLen int) bodySlice {
+	if len(body) <= maxLen {
+		return bodySlice{body: body}
+	}
+	return bodySlice{
+		body:      body[:maxLen],
+		truncated: true,
+	}
 }
 
 func renderPrometheusMetrics(running bool, snapshot map[string]core.Metric) string {
