@@ -100,8 +100,11 @@ func (tg *SimpleThreadGroup) Start(ctx context.Context, runner core.Runner) {
 
 				tCtx.Iteration = iter
 
-				// Execute all children
+				// Execute all children (skip disabled)
 				for _, child := range tg.GetChildren() {
+					if !child.Enabled() {
+						continue
+					}
 					if exec, ok := child.(core.Executable); ok {
 						err := exec.Execute(tCtx)
 						if err != nil {
@@ -187,8 +190,11 @@ func (tg *RPSThreadGroup) Start(ctx context.Context, runner core.Runner) {
 					return
 				default:
 					runtime.Gosched()
-					// Execute children
+					// Execute children (skip disabled)
 					for _, child := range tg.GetChildren() {
+						if !child.Enabled() {
+							continue
+						}
 						if exec, ok := child.(core.Executable); ok {
 							if err := exec.Execute(tCtx); err != nil {
 								if groupCtx.Err() != nil {

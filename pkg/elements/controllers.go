@@ -104,6 +104,9 @@ func (l *LoopController) Execute(ctx *core.Context) error {
 		}
 
 		for _, child := range l.GetChildren() {
+			if !child.Enabled() {
+				continue
+			}
 			if exec, ok := child.(core.Executable); ok {
 				if err := exec.Execute(ctx); err != nil {
 					return err
@@ -137,6 +140,9 @@ func (c *IfController) Clone() core.TestElement {
 func (c *IfController) Execute(ctx *core.Context) error {
 	if c.Condition(ctx) {
 		for _, child := range c.GetChildren() {
+			if !child.Enabled() {
+				continue
+			}
 			if exec, ok := child.(core.Executable); ok {
 				if err := exec.Execute(ctx); err != nil {
 					return err

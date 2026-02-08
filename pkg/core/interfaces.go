@@ -13,6 +13,8 @@ type TestElement interface {
 	Name() string
 	SetName(name string)
 	SetID(id string)
+	Enabled() bool
+	SetEnabled(bool)
 	Clone() TestElement
 	GetChildren() []TestElement
 	AddChild(child TestElement)
@@ -52,13 +54,15 @@ type Runner interface {
 type BaseElement struct {
 	id       string
 	name     string
+	enabled  bool
 	children []TestElement
 }
 
 func NewBaseElement(name string) BaseElement {
 	return BaseElement{
-		id:   GenerateID(), // We'll need a helper for this
-		name: name,
+		id:      GenerateID(),
+		name:    name,
+		enabled: true,
 	}
 }
 
@@ -76,6 +80,14 @@ func (b *BaseElement) Name() string {
 
 func (b *BaseElement) SetName(name string) {
 	b.name = name
+}
+
+func (b *BaseElement) Enabled() bool {
+	return b.enabled
+}
+
+func (b *BaseElement) SetEnabled(v bool) {
+	b.enabled = v
 }
 
 func (b *BaseElement) GetChildren() []TestElement {
@@ -98,6 +110,7 @@ func (b *BaseElement) RemoveChild(childID string) {
 
 func (b *BaseElement) Clone() TestElement {
 	newB := *b
+	newB.enabled = b.enabled
 	if b.children != nil {
 		newB.children = make([]TestElement, len(b.children))
 		for i, c := range b.children {

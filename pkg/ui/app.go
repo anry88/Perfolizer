@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"path/filepath"
 	"perfolizer/pkg/core"
 	"perfolizer/pkg/elements"
 	"sort"
@@ -16,12 +17,66 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
 const maxDebugItems = 150
 const maxBodyPreviewChars = 20000
+const prefToggleEnabledKey = "toggleEnabledKey"
+const defaultToggleEnabledKey = "Ctrl+E"
+
+// treeWithContextMenu wraps the tree so right-click shows Enable/Disable menu for the selected node.
+type treeWithContextMenu struct {
+	widget.BaseWidget
+	tree *widget.Tree
+	pa   *PerfolizerApp
+}
+
+func newTreeWithContextMenu(tree *widget.Tree, pa *PerfolizerApp) *treeWithContextMenu {
+	t := &treeWithContextMenu{tree: tree, pa: pa}
+	t.ExtendBaseWidget(t)
+	return t
+}
+
+func (t *treeWithContextMenu) TappedSecondary(*fyne.PointEvent) {
+	t.pa.showNodeContextMenu(t.pa.CurrentNodeID)
+}
+
+func (t *treeWithContextMenu) CreateRenderer() fyne.WidgetRenderer {
+	return &treeWithContextMenuRenderer{tree: t.tree, obj: t}
+}
+
+type treeWithContextMenuRenderer struct {
+	tree *widget.Tree
+	obj  *treeWithContextMenu
+}
+
+func (r *treeWithContextMenuRenderer) Destroy() {}
+
+func (r *treeWithContextMenuRenderer) Layout(size fyne.Size) {
+	r.tree.Resize(size)
+}
+
+func (r *treeWithContextMenuRenderer) MinSize() fyne.Size {
+	return r.tree.MinSize()
+}
+
+func (r *treeWithContextMenuRenderer) Objects() []fyne.CanvasObject {
+	return []fyne.CanvasObject{r.tree}
+}
+
+func (r *treeWithContextMenuRenderer) Refresh() {}
+
+// uriPath returns a filesystem path from a fyne URI (handles file:// on Windows).
+func uriPath(uri fyne.URI) string {
+	p := uri.Path()
+	if p != "" && p[0] == '/' && (len(p) < 2 || p[1] != '/') {
+		p = p[1:]
+	}
+	return filepath.FromSlash(p)
+}
 
 type PerfolizerApp struct {
 	FyneApp fyne.App
@@ -32,8 +87,8 @@ type PerfolizerApp struct {
 	DebugConsoleList   *fyne.Container
 	DebugConsoleScroll *container.Scroll
 
-	TestPlan      core.TestElement // Root of the plan
-	CurrentNodeID string
+	Project       *core.Project // Project with multiple test plans
+	CurrentNodeID string        // Tree node ID: "plan:i" or "plan:i:elementId"
 
 	agentClient    *AgentClient
 	agentInitError error
@@ -42,6 +97,8 @@ type PerfolizerApp struct {
 	cancelFunc     context.CancelFunc
 	isRunning      bool
 	isDebugRunning bool
+
+	toggleShortcut fyne.Shortcut // stored so we can remove when re-registering
 }
 
 func NewPerfolizerApp() *PerfolizerApp {
@@ -67,6 +124,7 @@ func NewPerfolizerApp() *PerfolizerApp {
 
 	pa.setupTestPlan()
 	pa.setupUI()
+	pa.registerToggleKey()
 
 	return pa
 }
@@ -76,60 +134,109 @@ func (pa *PerfolizerApp) Run() {
 }
 
 func (pa *PerfolizerApp) setupTestPlan() {
-	// Default starting plan
+	pa.Project = core.NewProject("Project")
 	root := core.NewBaseElement("Test Plan")
-	// Add a default ThreadGroup
 	tg := elements.NewSimpleThreadGroup("Thread Group 1", 1, 1)
 	root.AddChild(tg)
-	pa.TestPlan = &root
+	pa.Project.AddPlan("Test Plan", &root)
 }
 
 func (pa *PerfolizerApp) setupUI() {
-	// 1. Tree View
+	// 1. Tree View: root "" -> plan:0, plan:1, ...; plan:i -> plan:i:childIds; plan:i:elId -> children
 	pa.Tree = widget.NewTree(
 		func(id widget.TreeNodeID) []widget.TreeNodeID {
-			// Get children IDs
-			// This relies on a map or traversal system.
-			// For MVP we need a way to map IDs to Elements quickly.
-			// Or we recursively traverse.
-			// Fyne Tree logic: Root is empty string ""?
 			if id == "" {
-				return []string{pa.TestPlan.ID()}
-			}
-			el := pa.findElementByID(pa.TestPlan, id)
-			if el != nil {
 				var ids []string
-				for _, c := range el.GetChildren() {
-					ids = append(ids, c.ID())
+				for i := 0; i < pa.Project.PlanCount(); i++ {
+					ids = append(ids, fmt.Sprintf("plan:%d", i))
 				}
 				return ids
 			}
-			return nil
+			planIdx, el := pa.resolveNode(id)
+			if planIdx < 0 {
+				return nil
+			}
+			var root core.TestElement
+			if el == nil {
+				root = pa.Project.Plans[planIdx].Root
+			} else {
+				root = el
+			}
+			var ids []string
+			for _, c := range root.GetChildren() {
+				ids = append(ids, fmt.Sprintf("plan:%d:%s", planIdx, c.ID()))
+			}
+			return ids
 		},
 		func(id widget.TreeNodeID) bool {
-			// IsBranch
 			if id == "" {
 				return true
 			}
-			el := pa.findElementByID(pa.TestPlan, id)
-			return el != nil && len(el.GetChildren()) > 0
+			planIdx, el := pa.resolveNode(id)
+			if planIdx < 0 {
+				return false
+			}
+			var root core.TestElement
+			if el == nil {
+				root = pa.Project.Plans[planIdx].Root
+			} else {
+				root = el
+			}
+			return len(root.GetChildren()) > 0
 		},
 		func(branch bool) fyne.CanvasObject {
-			return widget.NewLabel("Node")
+			seg := &widget.TextSegment{Text: " "}
+			seg.Style.ColorName = theme.ColorNameForeground
+			return widget.NewRichText(seg)
 		},
 		func(id widget.TreeNodeID, branch bool, o fyne.CanvasObject) {
-			el := pa.findElementByID(pa.TestPlan, id)
-			if el != nil {
-				o.(*widget.Label).SetText(el.Name())
+			planIdx, el := pa.resolveNode(id)
+			if planIdx < 0 {
+				return
 			}
+			rt := o.(*widget.RichText)
+			segs := rt.Segments
+			if len(segs) == 0 {
+				return
+			}
+			seg := segs[0].(*widget.TextSegment)
+			var name string
+			if el == nil {
+				name = pa.Project.Plans[planIdx].Name
+				if planIdx == pa.getCurrentPlanIndex() {
+					seg.Style.ColorName = theme.ColorNamePrimary
+					seg.Style.TextStyle = fyne.TextStyle{Bold: true}
+				} else {
+					seg.Style.ColorName = theme.ColorNameForeground
+					seg.Style.TextStyle = fyne.TextStyle{}
+				}
+			} else {
+				name = el.Name()
+				seg.Style.TextStyle = fyne.TextStyle{}
+				if el.Enabled() {
+					seg.Style.ColorName = theme.ColorNameForeground
+				} else {
+					seg.Style.ColorName = theme.ColorNameDisabled
+				}
+			}
+			seg.Text = name
+			rt.Refresh()
 		},
 	)
 
 	pa.Tree.OnSelected = func(id widget.TreeNodeID) {
 		pa.CurrentNodeID = id
-		el := pa.findElementByID(pa.TestPlan, id)
-		if el != nil {
-			pa.showProperties(el)
+		planIdx, el := pa.resolveNode(id)
+		if planIdx >= 0 {
+			// Refresh plan nodes so active plan highlight updates
+			for i := 0; i < pa.Project.PlanCount(); i++ {
+				pa.Tree.RefreshItem(fmt.Sprintf("plan:%d", i))
+			}
+			if el == nil {
+				pa.showPlanProperties(planIdx)
+			} else {
+				pa.showProperties(el)
+			}
 		}
 	}
 
@@ -149,11 +256,14 @@ func (pa *PerfolizerApp) setupUI() {
 
 	// 2. Toolbar (Top)
 	toolbar := widget.NewToolbar(
-		widget.NewToolbarAction(theme.ContentAddIcon(), func() { pa.addElement() }),       // Add
-		widget.NewToolbarAction(theme.ContentRemoveIcon(), func() { pa.removeElement() }), // Remove
+		widget.NewToolbarAction(theme.ContentAddIcon(), func() { pa.addElement() }),       // Add element
+		widget.NewToolbarAction(theme.ContentRemoveIcon(), func() { pa.removeElement() }), // Remove element/plan
+		widget.NewToolbarSpacer(),
+		widget.NewToolbarAction(theme.FolderNewIcon(), func() { pa.addPlan() }), // Add plan
 		widget.NewToolbarSpacer(),
 		widget.NewToolbarAction(theme.FolderOpenIcon(), func() { pa.loadTestPlan() }),
 		widget.NewToolbarAction(theme.DocumentSaveIcon(), func() { pa.saveTestPlan() }),
+		widget.NewToolbarAction(theme.SettingsIcon(), func() { pa.showPreferences() }), // Settings
 		widget.NewToolbarSpacer(),
 		widget.NewToolbarAction(theme.MediaPlayIcon(), func() { pa.runTest() }),          // Start
 		widget.NewToolbarAction(theme.SearchReplaceIcon(), func() { pa.runDebugTest() }), // Debug
@@ -164,14 +274,222 @@ func (pa *PerfolizerApp) setupUI() {
 	rightSplit := container.NewVSplit(pa.Content, debugPanel)
 	rightSplit.SetOffset(0.62)
 
+	// Wrap tree so right-click opens context menu (no ⋮ button)
+	treeWithCtxMenu := newTreeWithContextMenu(pa.Tree, pa)
 	split := container.NewHSplit(
-		container.NewBorder(nil, nil, nil, nil, pa.Tree),
+		container.NewBorder(nil, nil, nil, nil, treeWithCtxMenu),
 		rightSplit,
 	)
 	split.SetOffset(0.3)
 
-	mainLayout := container.NewBorder(toolbar, nil, nil, nil, split)
+	// Top bar: toolbar + separator so it doesn't blend with content
+	toolbarBar := container.NewVBox(
+		container.NewPadded(container.NewStack(
+			canvas.NewRectangle(theme.Color(theme.ColorNameButton)),
+			toolbar,
+		)),
+		widget.NewSeparator(),
+	)
+	mainLayout := container.NewBorder(toolbarBar, nil, nil, nil, split)
 	pa.Window.SetContent(mainLayout)
+}
+
+// parseShortcut parses "Ctrl+E", "Alt+Shift+E" etc. into KeyName and Modifier.
+// Requires at least one modifier (Ctrl, Alt, Shift, Super) so the shortcut works with AddShortcut.
+func parseShortcut(s string) (keyName fyne.KeyName, modifier fyne.KeyModifier, ok bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", 0, false
+	}
+	parts := strings.Split(s, "+")
+	for i, p := range parts {
+		parts[i] = strings.TrimSpace(p)
+	}
+	if len(parts) < 2 {
+		return "", 0, false // need at least Modifier+Key
+	}
+	keyPart := parts[len(parts)-1]
+	modParts := parts[:len(parts)-1]
+	var mod fyne.KeyModifier
+	for _, m := range modParts {
+		switch strings.ToLower(m) {
+		case "ctrl", "control":
+			mod |= fyne.KeyModifierControl
+		case "alt":
+			mod |= fyne.KeyModifierAlt
+		case "shift":
+			mod |= fyne.KeyModifierShift
+		case "super", "cmd", "meta":
+			mod |= fyne.KeyModifierSuper
+		default:
+			return "", 0, false
+		}
+	}
+	if mod == 0 {
+		return "", 0, false
+	}
+	// Map key string to fyne.KeyName (letters and common keys)
+	keyPart = strings.ToUpper(keyPart)
+	if len(keyPart) == 1 && keyPart >= "A" && keyPart <= "Z" {
+		return fyne.KeyName(keyPart), mod, true
+	}
+	// Common keys
+	switch keyPart {
+	case "SPACE":
+		return fyne.KeySpace, mod, true
+	case "ENTER", "RETURN":
+		return fyne.KeyReturn, mod, true
+	case "TAB":
+		return fyne.KeyTab, mod, true
+	case "ESCAPE", "ESC":
+		return fyne.KeyEscape, mod, true
+	case "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12":
+		return fyne.KeyName(keyPart), mod, true
+	default:
+		return fyne.KeyName(keyPart), mod, true
+	}
+}
+
+func (pa *PerfolizerApp) registerToggleKey() {
+	canvas := pa.Window.Canvas()
+	if pa.toggleShortcut != nil {
+		canvas.RemoveShortcut(pa.toggleShortcut)
+		pa.toggleShortcut = nil
+	}
+	spec := pa.FyneApp.Preferences().StringWithFallback(prefToggleEnabledKey, defaultToggleEnabledKey)
+	keyName, modifier, ok := parseShortcut(spec)
+	if !ok {
+		spec = defaultToggleEnabledKey
+		keyName, modifier, ok = parseShortcut(spec)
+		if !ok {
+			return
+		}
+	}
+	shortcut := &desktop.CustomShortcut{KeyName: keyName, Modifier: modifier}
+	pa.toggleShortcut = shortcut
+	canvas.AddShortcut(shortcut, func(fyne.Shortcut) {
+		pa.toggleCurrentElementEnabled()
+	})
+}
+
+func (pa *PerfolizerApp) showPreferences() {
+	prefs := pa.FyneApp.Preferences()
+	currentKey := prefs.StringWithFallback(prefToggleEnabledKey, defaultToggleEnabledKey)
+	keyEntry := widget.NewEntry()
+	keyEntry.SetText(currentKey)
+	keyEntry.PlaceHolder = "e.g. Ctrl+E, Alt+Shift+T"
+	dialog.ShowForm("Preferences", "Save", "Cancel", []*widget.FormItem{
+		widget.NewFormItem("Toggle element shortcut (e.g. Ctrl+E)", keyEntry),
+	}, func(ok bool) {
+		if !ok {
+			return
+		}
+		txt := strings.TrimSpace(keyEntry.Text)
+		if txt == "" {
+			txt = defaultToggleEnabledKey
+		}
+		if _, _, parseOk := parseShortcut(txt); !parseOk {
+			dialog.ShowError(fmt.Errorf("use a combination with Ctrl, Alt, Shift or Super (e.g. Ctrl+E)"), pa.Window)
+			return
+		}
+		prefs.SetString(prefToggleEnabledKey, txt)
+		pa.registerToggleKey()
+	}, pa.Window)
+}
+
+// parsePlanNodeID splits "plan:i" or "plan:i:elementId" into plan index and optional element ID.
+// Returns planIndex, elementID (empty for plan node), ok.
+func (pa *PerfolizerApp) parsePlanNodeID(nodeID string) (planIndex int, elementID string, ok bool) {
+	if nodeID == "" || pa.Project == nil {
+		return -1, "", false
+	}
+	parts := strings.SplitN(nodeID, ":", 3)
+	if len(parts) < 2 || parts[0] != "plan" {
+		return -1, "", false
+	}
+	var idx int
+	if _, err := fmt.Sscanf(parts[1], "%d", &idx); err != nil || idx < 0 || idx >= pa.Project.PlanCount() {
+		return -1, "", false
+	}
+	if len(parts) == 3 {
+		return idx, parts[2], true
+	}
+	return idx, "", true
+}
+
+// getCurrentPlanIndex returns the plan index for CurrentNodeID, or 0 if none.
+func (pa *PerfolizerApp) getCurrentPlanIndex() int {
+	idx, _, ok := pa.parsePlanNodeID(pa.CurrentNodeID)
+	if !ok || idx < 0 {
+		return 0
+	}
+	return idx
+}
+
+// getCurrentPlan returns the root TestElement of the current plan, or nil.
+func (pa *PerfolizerApp) getCurrentPlan() core.TestElement {
+	idx := pa.getCurrentPlanIndex()
+	if pa.Project == nil || idx < 0 || idx >= pa.Project.PlanCount() {
+		return nil
+	}
+	return pa.Project.Plans[idx].Root
+}
+
+// resolveNode returns the plan index and the TestElement for the given tree node ID.
+// For "plan:i" element is nil (plan node). For "plan:i:elId" element is the element.
+func (pa *PerfolizerApp) resolveNode(nodeID string) (planIndex int, element core.TestElement) {
+	idx, elID, ok := pa.parsePlanNodeID(nodeID)
+	if !ok || pa.Project == nil || idx < 0 || idx >= pa.Project.PlanCount() {
+		return -1, nil
+	}
+	root := pa.Project.Plans[idx].Root
+	if elID == "" {
+		return idx, nil
+	}
+	return idx, pa.findElementByID(root, elID)
+}
+
+func (pa *PerfolizerApp) showNodeContextMenu(nodeID string) {
+	_, el := pa.resolveNode(nodeID)
+	if el == nil {
+		return // plan node has no enable/disable
+	}
+	enabled := el.Enabled()
+	enableItem := fyne.NewMenuItem("Enable", func() {
+		el.SetEnabled(true)
+		pa.Tree.RefreshItem(nodeID)
+	})
+	disableItem := fyne.NewMenuItem("Disable", func() {
+		el.SetEnabled(false)
+		pa.Tree.RefreshItem(nodeID)
+	})
+	enableItem.Disabled = enabled
+	disableItem.Disabled = !enabled
+	menu := fyne.NewMenu("", enableItem, disableItem)
+	pop := widget.NewPopUpMenu(menu, pa.Window.Canvas())
+	pop.Show()
+}
+
+func (pa *PerfolizerApp) toggleCurrentElementEnabled() {
+	planIdx, el := pa.resolveNode(pa.CurrentNodeID)
+	if planIdx < 0 || el == nil {
+		return
+	}
+	el.SetEnabled(!el.Enabled())
+	pa.Tree.RefreshItem(pa.CurrentNodeID)
+	pa.showProperties(el) // refresh properties panel if this node is selected
+}
+
+// treeIDForElement returns the tree node ID for an element in the given plan.
+func (pa *PerfolizerApp) treeIDForElement(planIndex int, el core.TestElement) string {
+	if pa.Project == nil || planIndex < 0 || planIndex >= pa.Project.PlanCount() {
+		return ""
+	}
+	root := pa.Project.Plans[planIndex].Root
+	if root == el {
+		return fmt.Sprintf("plan:%d", planIndex)
+	}
+	return fmt.Sprintf("plan:%d:%s", planIndex, el.ID())
 }
 
 // Helper to find node (DFS)
@@ -188,20 +506,42 @@ func (pa *PerfolizerApp) findElementByID(root core.TestElement, id string) core.
 	return nil
 }
 
+func (pa *PerfolizerApp) showPlanProperties(planIndex int) {
+	if pa.Project == nil || planIndex < 0 || planIndex >= pa.Project.PlanCount() {
+		return
+	}
+	pa.Content.Objects = nil
+	pe := &pa.Project.Plans[planIndex]
+	nameEntry := widget.NewEntry()
+	nameEntry.SetText(pe.Name)
+	nameEntry.OnChanged = func(s string) {
+		pe.Name = s
+		pa.Tree.RefreshItem(fmt.Sprintf("plan:%d", planIndex))
+	}
+	form := widget.NewForm(widget.NewFormItem("Plan name", nameEntry))
+	pa.Content.Objects = []fyne.CanvasObject{container.NewVBox(widget.NewLabel("Test plan"), form)}
+	pa.Content.Refresh()
+}
+
 func (pa *PerfolizerApp) showProperties(el core.TestElement) {
-	// Clear content
-	// Dynamically build form based on type type switch
 	pa.Content.Objects = nil
 
 	nameEntry := widget.NewEntry()
 	nameEntry.SetText(el.Name())
 	nameEntry.OnChanged = func(s string) {
 		el.SetName(s)
-		pa.Tree.RefreshItem(el.ID())
+		pa.Tree.RefreshItem(pa.treeIDForElement(pa.getCurrentPlanIndex(), el))
 	}
+
+	enabledCheck := widget.NewCheck("Enabled (included in test run)", func(checked bool) {
+		el.SetEnabled(checked)
+		pa.Tree.RefreshItem(pa.treeIDForElement(pa.getCurrentPlanIndex(), el))
+	})
+	enabledCheck.SetChecked(el.Enabled())
 
 	form := widget.NewForm(
 		widget.NewFormItem("Name", nameEntry),
+		widget.NewFormItem("", enabledCheck),
 	)
 
 	// Add specific fields
@@ -305,12 +645,11 @@ func (pa *PerfolizerApp) saveTestPlan() {
 			return
 		}
 		if writer == nil {
-			return // User cancelled
+			return
 		}
 		defer writer.Close()
-
-		// Use core.SaveTestPlan
-		if err := core.SaveTestPlan(writer.URI().Path(), pa.TestPlan); err != nil {
+		path := uriPath(writer.URI())
+		if err := core.SaveProject(path, pa.Project); err != nil {
 			dialog.ShowError(err, pa.Window)
 		}
 	}, pa.Window)
@@ -323,25 +662,27 @@ func (pa *PerfolizerApp) loadTestPlan() {
 			return
 		}
 		if reader == nil {
-			return // User cancelled
-		}
-		defer reader.Close()
-
-		// Use core.LoadTestPlan
-		plan, err := core.LoadTestPlan(reader.URI().Path())
-		if err != nil {
-			dialog.ShowError(err, pa.Window)
 			return
 		}
-		pa.TestPlan = plan
-		// Refresh Tree from root
+		defer reader.Close()
+		path := uriPath(reader.URI())
+		proj, err := core.LoadProject(path)
+		if err != nil {
+			// Legacy: single test plan JSON
+			plan, loadErr := core.LoadTestPlan(path)
+			if loadErr != nil {
+				dialog.ShowError(err, pa.Window)
+				return
+			}
+			proj = core.NewProject("Project")
+			proj.AddPlan(plan.Name(), plan)
+		}
+		pa.Project = proj
 		pa.Tree.RefreshItem("")
-		// Reset
 		pa.CurrentNodeID = ""
 		pa.Content.Objects = nil
 		pa.Content.Refresh()
 		pa.Tree.Refresh()
-
 	}, pa.Window)
 }
 
@@ -359,7 +700,12 @@ func (pa *PerfolizerApp) runTest() {
 		return
 	}
 
-	if err := pa.agentClient.RunTest(pa.TestPlan); err != nil {
+	plan := pa.getCurrentPlan()
+	if plan == nil {
+		dialog.ShowError(fmt.Errorf("no test plan selected"), pa.Window)
+		return
+	}
+	if err := pa.agentClient.RunTest(plan); err != nil {
 		dialog.ShowError(err, pa.Window)
 		return
 	}
@@ -395,7 +741,9 @@ func (pa *PerfolizerApp) runDebugTest() {
 	}
 
 	samplers := make([]*elements.HttpSampler, 0)
-	pa.collectHTTPSamplers(pa.TestPlan, &samplers)
+	if plan := pa.getCurrentPlan(); plan != nil {
+		pa.collectHTTPSamplers(plan, &samplers)
+	}
 	if len(samplers) == 0 {
 		dialog.ShowInformation("Debug run", "No HTTP samplers found in the test plan.", pa.Window)
 		return
@@ -427,6 +775,9 @@ func (pa *PerfolizerApp) executeDebugRun(samplers []*elements.HttpSampler) {
 }
 
 func (pa *PerfolizerApp) collectHTTPSamplers(root core.TestElement, out *[]*elements.HttpSampler) {
+	if !root.Enabled() {
+		return
+	}
 	if sampler, ok := root.(*elements.HttpSampler); ok {
 		*out = append(*out, sampler)
 	}
@@ -532,14 +883,26 @@ func (pa *PerfolizerApp) findParent(root core.TestElement, childID string) core.
 	return nil
 }
 
-func (pa *PerfolizerApp) addElement() {
-	var parent core.TestElement
-	if pa.CurrentNodeID != "" {
-		parent = pa.findElementByID(pa.TestPlan, pa.CurrentNodeID)
-	} else {
-		parent = pa.TestPlan
-	}
+func (pa *PerfolizerApp) addPlan() {
+	root := core.NewBaseElement("Test Plan")
+	tg := elements.NewSimpleThreadGroup("Thread Group 1", 1, 1)
+	root.AddChild(tg)
+	pa.Project.AddPlan("Test Plan", &root)
+	pa.Tree.RefreshItem("")
+	pa.Tree.OpenBranch(fmt.Sprintf("plan:%d", pa.Project.PlanCount()-1))
+}
 
+func (pa *PerfolizerApp) addElement() {
+	planIdx, el := pa.resolveNode(pa.CurrentNodeID)
+	if planIdx < 0 {
+		return
+	}
+	var parent core.TestElement
+	if el == nil {
+		parent = pa.Project.Plans[planIdx].Root
+	} else {
+		parent = el
+	}
 	if parent == nil {
 		return
 	}
@@ -547,17 +910,19 @@ func (pa *PerfolizerApp) addElement() {
 	// Simple dialog with buttons for now
 	d := dialog.NewCustom("Select Element Type", "Cancel",
 		container.NewVBox(
-			widget.NewButton("Simple Thread Group", func() { pa.doAddElement(parent, "Simple Thread Group") }),
-			widget.NewButton("RPS Thread Group", func() { pa.doAddElement(parent, "RPS Thread Group") }),
-			widget.NewButton("HTTP Sampler", func() { pa.doAddElement(parent, "HTTP Sampler") }),
-			widget.NewButton("If Controller", func() { pa.doAddElement(parent, "If Controller") }),
-			widget.NewButton("Pause Controller", func() { pa.doAddElement(parent, "Pause Controller") }),
+			widget.NewButton("Simple Thread Group", func() { pa.doAddElement(planIdx, parent, "Simple Thread Group") }),
+			widget.NewButton("RPS Thread Group", func() { pa.doAddElement(planIdx, parent, "RPS Thread Group") }),
+			widget.NewButton("HTTP Sampler", func() { pa.doAddElement(planIdx, parent, "HTTP Sampler") }),
+			widget.NewButton("If Controller", func() { pa.doAddElement(planIdx, parent, "If Controller") }),
+			widget.NewButton("Pause Controller", func() { pa.doAddElement(planIdx, parent, "Pause Controller") }),
 		), pa.Window)
 	d.Show()
 }
 
-func (pa *PerfolizerApp) doAddElement(parent core.TestElement, typeName string) {
-	pa.Window.Canvas().Overlays().Top().Hide() // Close info/dialog
+func (pa *PerfolizerApp) doAddElement(planIdx int, parent core.TestElement, typeName string) {
+	if top := pa.Window.Canvas().Overlays().Top(); top != nil {
+		top.Hide()
+	}
 
 	var newEl core.TestElement
 	switch typeName {
@@ -575,11 +940,12 @@ func (pa *PerfolizerApp) doAddElement(parent core.TestElement, typeName string) 
 
 	if newEl != nil {
 		parent.AddChild(newEl)
-		pa.Tree.RefreshItem(parent.ID())
-		if parent == pa.TestPlan {
+		treeID := pa.treeIDForElement(planIdx, parent)
+		pa.Tree.RefreshItem(treeID)
+		if treeID == fmt.Sprintf("plan:%d", planIdx) {
 			pa.Tree.RefreshItem("")
 		}
-		pa.Tree.OpenBranch(parent.ID())
+		pa.Tree.OpenBranch(treeID)
 	}
 }
 
@@ -587,19 +953,39 @@ func (pa *PerfolizerApp) removeElement() {
 	if pa.CurrentNodeID == "" {
 		return
 	}
-	id := pa.CurrentNodeID
-	if id == pa.TestPlan.ID() {
-		dialog.ShowInformation("Error", "Cannot remove Root Test Plan", pa.Window)
+	planIdx, el := pa.resolveNode(pa.CurrentNodeID)
+	if planIdx < 0 {
 		return
 	}
-
-	parent := pa.findParent(pa.TestPlan, id)
+	if el == nil {
+		// Removing a plan
+		if pa.Project.PlanCount() <= 1 {
+			dialog.ShowInformation("Error", "Cannot remove the last test plan", pa.Window)
+			return
+		}
+		dialog.ShowConfirm("Remove plan", "Remove this test plan?", func(ok bool) {
+			if ok {
+				pa.Project.RemovePlanAt(planIdx)
+				pa.Tree.RefreshItem("")
+				pa.CurrentNodeID = ""
+				pa.Content.Objects = nil
+				pa.Content.Refresh()
+			}
+		}, pa.Window)
+		return
+	}
+	root := pa.Project.Plans[planIdx].Root
+	if el == root {
+		dialog.ShowInformation("Error", "Cannot remove the plan root", pa.Window)
+		return
+	}
+	parent := pa.findParent(root, el.ID())
 	if parent != nil {
-		parent.RemoveChild(id)
-		pa.Tree.RefreshItem(parent.ID())
+		parent.RemoveChild(el.ID())
+		pa.Tree.RefreshItem(pa.treeIDForElement(planIdx, parent))
 		pa.Content.Objects = nil
 		pa.Content.Refresh()
-		pa.CurrentNodeID = "" // Clear selection
+		pa.CurrentNodeID = ""
 	}
 }
 

@@ -1,78 +1,140 @@
 {
-  "type": "TestPlan",
-  "id": "id_20260207150735.007762_3",
-  "name": "Test Plan",
-  "children": [
+  "name": "Project",
+  "plans": [
     {
-      "type": "RPSThreadGroup",
-      "id": "id_20260207150735.007781_4",
-      "name": "RPS Group",
-      "props": {
-        "DurationMS": 300000,
-        "RPS": 20,
-        "Users": 10
-      },
-      "children": [
-        {
-          "type": "HttpSampler",
-          "id": "id_20260207150735.007788_5",
-          "name": "Google",
-          "props": {
-            "Method": "GET",
-            "TargetRPS": 2,
-            "Url": "https://www.google.com"
+      "name": "MaxPerf",
+      "plan": {
+        "type": "TestPlan",
+        "id": "id_20260207150735.007762_3",
+        "name": "Test Plan",
+        "enabled": true,
+        "children": [
+          {
+            "type": "RPSThreadGroup",
+            "id": "id_20260207150735.007781_4",
+            "name": "RPS Group",
+            "enabled": false,
+            "props": {
+              "DurationMS": 300000,
+              "RPS": 20,
+              "Users": 10
+            },
+            "children": [
+              {
+                "type": "HttpSampler",
+                "id": "id_20260207150735.007788_5",
+                "name": "Google",
+                "enabled": true,
+                "props": {
+                  "Method": "GET",
+                  "TargetRPS": 2,
+                  "Url": "https://www.google.com"
+                }
+              },
+              {
+                "type": "HttpSampler",
+                "id": "id_20260207150735.007791_6",
+                "name": "Facebook",
+                "enabled": false,
+                "props": {
+                  "Method": "GET",
+                  "TargetRPS": 5,
+                  "Url": "https://www.facebook.com"
+                }
+              },
+              {
+                "type": "HttpSampler",
+                "id": "id_20260207155203.143198_10",
+                "name": "Yandex",
+                "enabled": true,
+                "props": {
+                  "Method": "GET",
+                  "TargetRPS": 3,
+                  "Url": "https://www.yandex.com"
+                }
+              }
+            ]
+          },
+          {
+            "type": "SimpleThreadGroup",
+            "id": "id_20260207150735.007794_7",
+            "name": "Thread Group",
+            "enabled": true,
+            "props": {
+              "Iterations": 10,
+              "Users": 1
+            },
+            "children": [
+              {
+                "type": "HttpSampler",
+                "id": "id_20260207150735.007796_8",
+                "name": "Localhost",
+                "enabled": false,
+                "props": {
+                  "Method": "GET",
+                  "TargetRPS": 0,
+                  "Url": "http://localhost:8080"
+                }
+              },
+              {
+                "type": "PauseController",
+                "id": "id_20260207150735.007799_9",
+                "name": "Pause",
+                "enabled": false,
+                "props": {
+                  "DurationMS": 5000
+                }
+              },
+              {
+                "type": "HttpSampler",
+                "id": "id_20260208041833.841897_14",
+                "name": "HTTP Request",
+                "enabled": true,
+                "props": {
+                  "Method": "GET",
+                  "TargetRPS": 0,
+                  "Url": "https://www.facebook.com"
+                }
+              }
+            ]
           }
-        },
-        {
-          "type": "HttpSampler",
-          "id": "id_20260207150735.007791_6",
-          "name": "Facebook",
-          "props": {
-            "Method": "GET",
-            "TargetRPS": 5,
-            "Url": "https://www.facebook.com"
-          }
-        },
-        {
-          "type": "HttpSampler",
-          "id": "id_20260207155203.143198_10",
-          "name": "Yandex",
-          "props": {
-            "Method": "GET",
-            "TargetRPS": 3,
-            "Url": "https://www.yandex.com"
-          }
-        }
-      ]
+        ]
+      }
     },
     {
-      "type": "SimpleThreadGroup",
-      "id": "id_20260207150735.007794_7",
-      "name": "Thread Group",
-      "props": {
-        "Iterations": 10,
-        "Users": 1
-      },
-      "children": [
-        {
-          "type": "HttpSampler",
-          "id": "id_20260207150735.007796_8",
-          "name": "Localhost",
-          "props": {
-            "Method": "GET",
-            "TargetRPS": 0,
-            "Url": "http://localhost:8080"
+      "name": "Stability",
+      "plan": {
+        "type": "TestPlan",
+        "id": "id_20260208034131.171785_11",
+        "name": "Test Plan",
+        "enabled": true,
+        "children": [
+          {
+            "type": "RPSThreadGroup",
+            "id": "id_20260208034215.120675_13",
+            "name": "RPS Group",
+            "enabled": true,
+            "props": {
+              "DurationMS": 60000,
+              "RPS": 10,
+              "Users": 10
+            },
+            "children": [
+              {
+                "type": "HttpSampler",
+                "id": "id_20260208034235.586675_14",
+                "name": "Yandex",
+                "enabled": true,
+                "props": {
+                  "Method": "GET",
+                  "TargetRPS": 3,
+                  "Url": "https://www.yandex.com"
+                }
+              }
+            ]
           }
-        },
-        {
-          "type": "PauseController",
-          "id": "id_20260207150735.007799_9",
-          "name": "Pause",
-          "props": {
-            "DurationMS": 5000
-          }
-        }
-      ]
+        ]
+      }
     }
   ]
 }

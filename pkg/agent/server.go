@@ -111,6 +111,9 @@ func runPlan(ctx context.Context, plan core.TestElement, runner core.Runner) {
 	var wg sync.WaitGroup
 
 	for _, child := range plan.GetChildren() {
+		if !child.Enabled() {
+			continue
+		}
 		tg, ok := child.(core.ThreadGroup)
 		if !ok {
 			continue

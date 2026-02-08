@@ -10,12 +10,71 @@ import (
 // DTOs for JSON serialization
 
 type TestElementDTO struct {
-	Type string `json:"type"`
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	Type    string `json:"type"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Enabled *bool  `json:"enabled,omitempty"` // nil/omit = true for backward compatibility
 
 	Props    map[string]interface{} `json:"props,omitempty"`
 	Children []TestElementDTO       `json:"children,omitempty"`
+}
+
+// ProjectDTO is the JSON shape for a saved project (one file, multiple plans).
+type ProjectDTO struct {
+	Name  string        `json:"name"`
+	Plans []PlanEntryDTO `json:"plans"`
+}
+
+// PlanEntryDTO is one test plan inside a project file.
+type PlanEntryDTO struct {
+	Name string         `json:"name"`
+	Plan TestElementDTO `json:"plan"`
+}
+
+func SaveProject(path string, proj *Project) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return WriteProject(file, proj, true)
+}
+
+func LoadProject(path string) (*Project, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return ReadProject(file)
+}
+
+func WriteProject(w io.Writer, proj *Project, pretty bool) error {
+	dto := ProjectDTO{Name: proj.Name, Plans: make([]PlanEntryDTO, 0, len(proj.Plans))}
+	for _, pe := range proj.Plans {
+		dto.Plans = append(dto.Plans, PlanEntryDTO{Name: pe.Name, Plan: toDTO(pe.Root)})
+	}
+	encoder := json.NewEncoder(w)
+	if pretty {
+		encoder.SetIndent("", "  ")
+	}
+	return encoder.Encode(dto)
+}
+
+func ReadProject(r io.Reader) (*Project, error) {
+	var dto ProjectDTO
+	if err := json.NewDecoder(r).Decode(&dto); err != nil {
+		return nil, err
+	}
+	proj := &Project{Name: dto.Name, Plans: make([]PlanEntry, 0, len(dto.Plans))}
+	for _, pe := range dto.Plans {
+		root, err := fromDTO(pe.Plan)
+		if err != nil {
+			return nil, err
+		}
+		proj.Plans = append(proj.Plans, PlanEntry{Name: pe.Name, Root: root})
+	}
+	return proj, nil
 }
 
 func SaveTestPlan(path string, root TestElement) error {
@@ -84,6 +143,8 @@ func toDTO(el TestElement) TestElementDTO {
 	}
 
 	dto.ID = el.ID()
+	enabled := el.Enabled()
+	dto.Enabled = &enabled
 
 	for _, child := range el.GetChildren() {
 		dto.Children = append(dto.Children, toDTO(child))
@@ -109,6 +170,9 @@ func fromDTO(dto TestElementDTO) (TestElement, error) {
 
 	if dto.ID != "" {
 		el.SetID(dto.ID)
+	}
+	if dto.Enabled != nil {
+		el.SetEnabled(*dto.Enabled)
 	}
 
 	loadChildren(el, dto.Children)
