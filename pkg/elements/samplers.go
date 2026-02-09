@@ -3,9 +3,11 @@ package elements
 import (
 	"bytes"
 	"io"
+	"math"
 	"net/http"
 	"perfolizer/pkg/core"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -52,12 +54,21 @@ func (h *HttpSampler) Clone() core.TestElement {
 func (h *HttpSampler) Execute(ctx *core.Context) error {
 	// 0. Rate Limiting (Per Sampler)
 
-	// Determine effective RPS
-	targetRPS := h.TargetRPS
-	if targetRPS == 0 {
+	// Determine effective RPS base
+	baseRPS := h.TargetRPS
+	if baseRPS == 0 {
 		if val, ok := ctx.GetVar("DefaultRPS").(float64); ok {
-			targetRPS = val
+			baseRPS = val
 		}
+	}
+
+	profileScale := getProfileScale(ctx)
+	targetRPS := baseRPS * profileScale
+
+	// In RPS Thread Group blocks, profileScale can intentionally be zero.
+	// If sampler has a base profile, skip execution in that case.
+	if baseRPS > 0 && targetRPS <= 0 {
+		return nil
 	}
 
 	if targetRPS > 0 {
@@ -163,6 +174,45 @@ func getOrCreateLimiter(ctx *core.Context, key string, targetRPS float64) *rate.
 	limiter := rate.NewLimiter(rate.Limit(targetRPS), 1)
 	ctx.SetVar(key, limiter)
 	return limiter
+}
+
+type profileScaleState struct {
+	bits atomic.Uint64
+}
+
+func newProfileScaleState(initial float64) *profileScaleState {
+	s := &profileScaleState{}
+	s.set(initial)
+	return s
+}
+
+func (s *profileScaleState) set(v float64) {
+	if v < 0 {
+		v = 0
+	}
+	s.bits.Store(math.Float64bits(v))
+}
+
+func (s *profileScaleState) get() float64 {
+	return math.Float64frombits(s.bits.Load())
+}
+
+func getProfileScale(ctx *core.Context) float64 {
+	val := ctx.GetVar("RPSProfileScale")
+	switch v := val.(type) {
+	case *profileScaleState:
+		if v == nil {
+			return 1
+		}
+		return v.get()
+	case float64:
+		if v < 0 {
+			return 0
+		}
+		return v
+	default:
+		return 1
+	}
 }
 
 // HttpSampler executes an HTTP request

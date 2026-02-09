@@ -614,17 +614,37 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 			}
 		}
 
+		blocksEntry := widget.NewMultiLineEntry()
+		blocksEntry.SetMinRowsVisible(6)
+		blocksEntry.SetText(formatRPSProfileBlocks(v.ProfileBlocks))
+		blocksEntry.SetPlaceHolder("rampUpMs,stepDurationMs,profilePercent\n5000,30000,100")
+		blocksEntry.OnChanged = func(s string) {
+			if blocks, err := parseRPSProfileBlocksText(s); err == nil {
+				v.ProfileBlocks = blocks
+			}
+		}
+
+		gracefulEntry := widget.NewEntry()
+		gracefulEntry.SetText(strconv.FormatInt(v.GracefulShutdown.Milliseconds(), 10))
+		gracefulEntry.OnChanged = func(s string) {
+			if val, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil && val >= 0 {
+				v.GracefulShutdown = time.Duration(val) * time.Millisecond
+			}
+		}
+
 		durationEntry := widget.NewEntry()
-		durationEntry.SetText(v.Duration.String())
+		durationEntry.SetText(strconv.FormatInt(v.Duration.Milliseconds(), 10))
 		durationEntry.OnChanged = func(s string) {
-			if val, err := time.ParseDuration(s); err == nil {
-				v.Duration = val
+			if val, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil && val >= 0 {
+				v.Duration = time.Duration(val) * time.Millisecond
 			}
 		}
 
 		form.Append("Target RPS", rpsEntry)
 		form.Append("Max Users", usersEntry)
-		form.Append("Duration", durationEntry)
+		form.Append("Profile blocks (rampMs,stepMs,profilePercent)", blocksEntry)
+		form.Append("Graceful shutdown (ms)", gracefulEntry)
+		form.Append("Legacy duration if blocks are empty (ms)", durationEntry)
 
 	case *elements.PauseController:
 		durEntry := widget.NewEntry()
@@ -1113,6 +1133,69 @@ func (pa *PerfolizerApp) appendDebugSamplerCard(index, total int, sampler *eleme
 	)
 
 	pa.appendDebugItem(container.NewPadded(card))
+}
+
+func formatRPSProfileBlocks(blocks []elements.RPSProfileBlock) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+
+	lines := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		line := fmt.Sprintf(
+			"%d,%d,%s",
+			block.RampUp.Milliseconds(),
+			block.StepDuration.Milliseconds(),
+			strconv.FormatFloat(block.ProfilePercent, 'f', -1, 64),
+		)
+		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func parseRPSProfileBlocksText(raw string) ([]elements.RPSProfileBlock, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+
+	lines := strings.Split(raw, "\n")
+	blocks := make([]elements.RPSProfileBlock, 0, len(lines))
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		parts := strings.Split(trimmed, ",")
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("invalid profile block at line %d", i+1)
+		}
+
+		rampUpMS, err := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+		if err != nil || rampUpMS < 0 {
+			return nil, fmt.Errorf("invalid ramp-up at line %d", i+1)
+		}
+
+		stepMS, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+		if err != nil || stepMS < 0 {
+			return nil, fmt.Errorf("invalid step duration at line %d", i+1)
+		}
+
+		profilePercent, err := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid profile percent at line %d", i+1)
+		}
+
+		blocks = append(blocks, elements.RPSProfileBlock{
+			RampUp:         time.Duration(rampUpMS) * time.Millisecond,
+			StepDuration:   time.Duration(stepMS) * time.Millisecond,
+			ProfilePercent: profilePercent,
+		})
+	}
+
+	return blocks, nil
 }
 
 func formatHeadersText(headers map[string][]string) string {
