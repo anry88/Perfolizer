@@ -614,17 +614,95 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 			}
 		}
 
-		durationEntry := widget.NewEntry()
-		durationEntry.SetText(v.Duration.String())
-		durationEntry.OnChanged = func(s string) {
-			if val, err := time.ParseDuration(s); err == nil {
-				v.Duration = val
+		if len(v.ProfileBlocks) == 0 {
+			v.ProfileBlocks = []elements.RPSProfileBlock{
+				{RampUp: 0, StepDuration: 60000 * time.Millisecond, ProfilePercent: 100},
+			}
+		}
+
+		blocksRows := container.NewVBox()
+		var renderBlockRows func()
+		renderBlockRows = func() {
+			blocksRows.Objects = nil
+
+			for i := range v.ProfileBlocks {
+				index := i
+
+				rampEntry := widget.NewEntry()
+				rampEntry.SetPlaceHolder("Ramp-up ms")
+				rampEntry.SetText(strconv.FormatInt(v.ProfileBlocks[index].RampUp.Milliseconds(), 10))
+				rampEntry.OnChanged = func(s string) {
+					if val, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil && val >= 0 && index < len(v.ProfileBlocks) {
+						v.ProfileBlocks[index].RampUp = time.Duration(val) * time.Millisecond
+					}
+				}
+
+				stepEntry := widget.NewEntry()
+				stepEntry.SetPlaceHolder("Step ms")
+				stepEntry.SetText(strconv.FormatInt(v.ProfileBlocks[index].StepDuration.Milliseconds(), 10))
+				stepEntry.OnChanged = func(s string) {
+					if val, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil && val >= 0 && index < len(v.ProfileBlocks) {
+						v.ProfileBlocks[index].StepDuration = time.Duration(val) * time.Millisecond
+					}
+				}
+
+				profileEntry := widget.NewEntry()
+				profileEntry.SetPlaceHolder("Profile %")
+				profileEntry.SetText(strconv.FormatFloat(v.ProfileBlocks[index].ProfilePercent, 'f', -1, 64))
+				profileEntry.OnChanged = func(s string) {
+					if val, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil && index < len(v.ProfileBlocks) {
+						v.ProfileBlocks[index].ProfilePercent = val
+					}
+				}
+
+				removeButton := widget.NewButton("-", func() {
+					if len(v.ProfileBlocks) <= 1 {
+						return
+					}
+					v.ProfileBlocks = append(v.ProfileBlocks[:index], v.ProfileBlocks[index+1:]...)
+					renderBlockRows()
+				})
+				if len(v.ProfileBlocks) <= 1 {
+					removeButton.Disable()
+				}
+
+				blocksRows.Add(container.NewGridWithColumns(4, rampEntry, stepEntry, profileEntry, removeButton))
+			}
+
+			blocksRows.Refresh()
+		}
+
+		renderBlockRows()
+
+		blocksHeaders := container.NewGridWithColumns(
+			4,
+			widget.NewLabel("Ramp-up (ms)"),
+			widget.NewLabel("Step duration (ms)"),
+			widget.NewLabel("Profile percent"),
+			widget.NewLabel(""),
+		)
+
+		addBlockButton := widget.NewButton("Add block", func() {
+			v.ProfileBlocks = append(v.ProfileBlocks, elements.RPSProfileBlock{
+				RampUp:         0,
+				StepDuration:   60000 * time.Millisecond,
+				ProfilePercent: 100,
+			})
+			renderBlockRows()
+		})
+
+		gracefulEntry := widget.NewEntry()
+		gracefulEntry.SetText(strconv.FormatInt(v.GracefulShutdown.Milliseconds(), 10))
+		gracefulEntry.OnChanged = func(s string) {
+			if val, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil && val >= 0 {
+				v.GracefulShutdown = time.Duration(val) * time.Millisecond
 			}
 		}
 
 		form.Append("Target RPS", rpsEntry)
 		form.Append("Max Users", usersEntry)
-		form.Append("Duration", durationEntry)
+		form.Append("Profile blocks", container.NewVBox(blocksHeaders, blocksRows, addBlockButton))
+		form.Append("Graceful shutdown (ms)", gracefulEntry)
 
 	case *elements.PauseController:
 		durEntry := widget.NewEntry()
@@ -934,7 +1012,7 @@ func (pa *PerfolizerApp) doAddElement(planIdx int, parent core.TestElement, type
 	case "Simple Thread Group":
 		newEl = elements.NewSimpleThreadGroup("Thread Group", 1, 1)
 	case "RPS Thread Group":
-		newEl = elements.NewRPSThreadGroup("RPS Group", 10.0, 60*1000000000)
+		newEl = elements.NewRPSThreadGroup("RPS Group", 10.0)
 	case "HTTP Sampler":
 		newEl = &elements.HttpSampler{BaseElement: core.NewBaseElement("HTTP Request"), Method: "GET", Url: "http://localhost"}
 	case "If Controller":
