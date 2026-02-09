@@ -86,7 +86,10 @@ Default config file: `config/agent.json`
 {
   "listen_host": "127.0.0.1",
   "port": 9090,
-  "ui_poll_interval_seconds": 15
+  "ui_poll_interval_seconds": 15,
+  "enable_remote_restart": false,
+  "remote_restart_token": "",
+  "remote_restart_command": ""
 }
 ```
 
@@ -96,6 +99,41 @@ PERFOLIZER_AGENT_CONFIG=/path/to/agent.json go run cmd/agent/main.go
 ```
 
 The same config is used by UI client to connect to the agent.
+
+### Remote process restart (via UI)
+
+Perfolizer can restart a remote agent process from the UI by sending an admin command to the agent API.
+
+1. Enable remote restart in the remote agent config:
+
+```json
+{
+  "listen_host": "0.0.0.0",
+  "port": 9090,
+  "ui_poll_interval_seconds": 15,
+  "enable_remote_restart": true,
+  "remote_restart_token": "replace-with-strong-secret",
+  "remote_restart_command": "sudo systemctl restart perfolizer-agent"
+}
+```
+
+2. Start the agent with that config:
+
+```bash
+PERFOLIZER_AGENT_CONFIG=/path/to/agent.json go run cmd/agent/main.go
+```
+
+3. In UI open `Settings -> Agents`, select the agent and configure:
+- `Restart token`: same value as `remote_restart_token`
+- `Restart command`: optional; if empty, agent uses `remote_restart_command` from its config
+
+4. Click `Restart process` in the agent runtime panel.
+
+Notes:
+- Remote restart endpoint is `POST /admin/restart`.
+- If `enable_remote_restart` is `false`, restart returns `403`.
+- If token is configured and does not match, restart returns `401`.
+- Keep `remote_restart_token` secret and avoid exposing agent admin API publicly.
 
 ### Legacy GUI-only start
 

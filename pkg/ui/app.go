@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -119,13 +120,21 @@ type PerfolizerApp struct {
 	Project       *core.Project // Project with multiple test plans
 	CurrentNodeID string        // Tree node ID: "plan:i" or "plan:i:elementId"
 
-	agentClient    *AgentClient
 	agentInitError error
 	pollInterval   time.Duration
+
+	agents        []agentSettingsEntry
+	activeAgentID string
+	agentClients  map[string]*AgentClient
+	agentRuntime  map[string]agentRuntimeState
+	agentStateMu  sync.RWMutex
 
 	cancelFunc     context.CancelFunc
 	isRunning      bool
 	isDebugRunning bool
+	runningAgentID string
+
+	settingsWindow fyne.Window
 
 	toggleShortcut fyne.Shortcut // stored so we can remove when re-registering
 }
@@ -135,7 +144,7 @@ func NewPerfolizerApp() *PerfolizerApp {
 	w := a.NewWindow("Perfolizer")
 	w.Resize(fyne.NewSize(1024, 768))
 
-	agentClient, cfg, cfgErr := NewAgentClientFromConfig()
+	defaultClient, cfg, cfgErr := NewAgentClientFromConfig()
 	pollInterval := 15 * time.Second
 	if cfg.UIPollIntervalSec > 0 {
 		pollInterval = time.Duration(cfg.UIPollIntervalSec) * time.Second
@@ -146,10 +155,12 @@ func NewPerfolizerApp() *PerfolizerApp {
 		Window:  w,
 		Content: container.NewMax(widget.NewLabel("Select a node to edit")),
 
-		agentClient:    agentClient,
 		agentInitError: cfgErr,
 		pollInterval:   pollInterval,
+		agentClients:   make(map[string]*AgentClient),
+		agentRuntime:   make(map[string]agentRuntimeState),
 	}
+	pa.initAgents(cfg.BaseURL(), defaultClient)
 
 	pa.setupTestPlan()
 	pa.setupUI()
@@ -399,31 +410,6 @@ func (pa *PerfolizerApp) registerToggleKey() {
 	canvas.AddShortcut(shortcut, func(fyne.Shortcut) {
 		pa.toggleCurrentElementEnabled()
 	})
-}
-
-func (pa *PerfolizerApp) showPreferences() {
-	prefs := pa.FyneApp.Preferences()
-	currentKey := prefs.StringWithFallback(prefToggleEnabledKey, defaultToggleEnabledKey)
-	keyEntry := widget.NewEntry()
-	keyEntry.SetText(currentKey)
-	keyEntry.PlaceHolder = "e.g. Ctrl+E, Alt+Shift+T"
-	dialog.ShowForm("Preferences", "Save", "Cancel", []*widget.FormItem{
-		widget.NewFormItem("Toggle element shortcut (e.g. Ctrl+E)", keyEntry),
-	}, func(ok bool) {
-		if !ok {
-			return
-		}
-		txt := strings.TrimSpace(keyEntry.Text)
-		if txt == "" {
-			txt = defaultToggleEnabledKey
-		}
-		if _, _, parseOk := parseShortcut(txt); !parseOk {
-			dialog.ShowError(fmt.Errorf("use a combination with Ctrl, Alt, Shift or Super (e.g. Ctrl+E)"), pa.Window)
-			return
-		}
-		prefs.SetString(prefToggleEnabledKey, txt)
-		pa.registerToggleKey()
-	}, pa.Window)
 }
 
 // parsePlanNodeID splits "plan:i" or "plan:i:elementId" into plan index and optional element ID.
@@ -798,12 +784,12 @@ func (pa *PerfolizerApp) runTest() {
 		return
 	}
 
-	if pa.agentInitError != nil {
-		dialog.ShowError(fmt.Errorf("agent config error: %w", pa.agentInitError), pa.Window)
-		return
-	}
-	if pa.agentClient == nil {
-		dialog.ShowError(fmt.Errorf("agent client is not configured"), pa.Window)
+	agentID, client, err := pa.resolveActiveAgentClient()
+	if err != nil {
+		if pa.agentInitError != nil {
+			err = fmt.Errorf("%w (config: %v)", err, pa.agentInitError)
+		}
+		dialog.ShowError(err, pa.Window)
 		return
 	}
 
@@ -812,7 +798,8 @@ func (pa *PerfolizerApp) runTest() {
 		dialog.ShowError(fmt.Errorf("no test plan selected"), pa.Window)
 		return
 	}
-	if err := pa.agentClient.RunTest(plan); err != nil {
+	if err := client.RunTest(plan); err != nil {
+		pa.markAgentUnavailable(agentID, err)
 		dialog.ShowError(err, pa.Window)
 		return
 	}
@@ -823,6 +810,8 @@ func (pa *PerfolizerApp) runTest() {
 	}
 
 	pa.isRunning = true
+	pa.runningAgentID = agentID
+	pa.markAgentRunStarted(agentID, pa.currentPlanDisplayName(), time.Now())
 
 	dashboard := NewDashboardWindow(pa.FyneApp)
 	dashboard.Show()
@@ -830,7 +819,7 @@ func (pa *PerfolizerApp) runTest() {
 	ctx, cancel := context.WithCancel(context.Background())
 	pa.cancelFunc = cancel
 
-	go pa.pollAgentMetrics(ctx, dashboard)
+	go pa.pollAgentMetrics(ctx, dashboard, agentID, client)
 }
 
 func (pa *PerfolizerApp) runDebugTest() {
@@ -838,12 +827,12 @@ func (pa *PerfolizerApp) runDebugTest() {
 		return
 	}
 
-	if pa.agentInitError != nil {
-		dialog.ShowError(fmt.Errorf("agent config error: %w", pa.agentInitError), pa.Window)
-		return
-	}
-	if pa.agentClient == nil {
-		dialog.ShowError(fmt.Errorf("agent client is not configured"), pa.Window)
+	_, client, err := pa.resolveActiveAgentClient()
+	if err != nil {
+		if pa.agentInitError != nil {
+			err = fmt.Errorf("%w (config: %v)", err, pa.agentInitError)
+		}
+		dialog.ShowError(err, pa.Window)
 		return
 	}
 
@@ -861,12 +850,12 @@ func (pa *PerfolizerApp) runDebugTest() {
 	pa.appendDebugInfo(fmt.Sprintf("Debug run started at %s", time.Now().Format(time.RFC3339)))
 	pa.appendDebugInfo(fmt.Sprintf("Requests to execute once: %d", len(samplers)))
 
-	go pa.executeDebugRun(samplers)
+	go pa.executeDebugRun(client, samplers)
 }
 
-func (pa *PerfolizerApp) executeDebugRun(samplers []*elements.HttpSampler) {
+func (pa *PerfolizerApp) executeDebugRun(client *AgentClient, samplers []*elements.HttpSampler) {
 	for i, sampler := range samplers {
-		exchange, err := pa.agentClient.DebugHTTP(core.DebugHTTPRequest{
+		exchange, err := client.DebugHTTP(core.DebugHTTPRequest{
 			Method: sampler.Method,
 			URL:    sampler.Url,
 			Body:   sampler.Body,
@@ -934,18 +923,21 @@ func (pa *PerfolizerApp) stopTest() {
 		pa.cancelFunc = nil
 	}
 	pa.isRunning = false
-
-	if pa.agentClient == nil {
+	agentID, client, err := pa.resolveStopTargetAgent()
+	if err != nil {
 		return
 	}
-
-	if err := pa.agentClient.StopTest(); err != nil {
+	if err := client.StopTest(); err != nil {
+		pa.markAgentUnavailable(agentID, err)
 		dialog.ShowError(err, pa.Window)
+		return
 	}
+	pa.markAgentIdle(agentID)
+	pa.runningAgentID = ""
 }
 
-func (pa *PerfolizerApp) pollAgentMetrics(ctx context.Context, dashboard *DashboardWindow) {
-	pa.pollOnce(dashboard)
+func (pa *PerfolizerApp) pollAgentMetrics(ctx context.Context, dashboard *DashboardWindow, agentID string, client *AgentClient) {
+	pa.pollOnce(dashboard, agentID, client)
 
 	ticker := time.NewTicker(pa.pollInterval)
 	defer ticker.Stop()
@@ -955,20 +947,23 @@ func (pa *PerfolizerApp) pollAgentMetrics(ctx context.Context, dashboard *Dashbo
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pa.pollOnce(dashboard)
+			pa.pollOnce(dashboard, agentID, client)
 		}
 	}
 }
 
-func (pa *PerfolizerApp) pollOnce(dashboard *DashboardWindow) {
-	data, running, err := pa.agentClient.FetchMetrics()
+func (pa *PerfolizerApp) pollOnce(dashboard *DashboardWindow, agentID string, client *AgentClient) {
+	snapshot, err := client.FetchSnapshot()
 	if err != nil {
+		pa.markAgentUnavailable(agentID, err)
 		return
 	}
+	pa.updateAgentRuntimeFromSnapshot(agentID, snapshot)
 
-	dashboard.Update(data)
-	if !running {
+	dashboard.Update(snapshot.Data)
+	if !snapshot.Running {
 		pa.isRunning = false
+		pa.runningAgentID = ""
 		if pa.cancelFunc != nil {
 			pa.cancelFunc()
 			pa.cancelFunc = nil
