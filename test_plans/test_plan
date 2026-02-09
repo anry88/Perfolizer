@@ -13,9 +13,21 @@
             "type": "RPSThreadGroup",
             "id": "id_20260207150735.007781_4",
             "name": "RPS Group",
-            "enabled": false,
+            "enabled": true,
             "props": {
-              "DurationMS": 300000,
+              "GracefulShutdownMS": 0,
+              "ProfileBlocks": [
+                {
+                  "ProfilePercent": 100,
+                  "RampUpMS": 10000,
+                  "StepDurationMS": 60000
+                },
+                {
+                  "ProfilePercent": 200,
+                  "RampUpMS": 10000,
+                  "StepDurationMS": 60000
+                }
+              ],
               "RPS": 20,
               "Users": 10
             },
@@ -35,7 +47,7 @@
                 "type": "HttpSampler",
                 "id": "id_20260207150735.007791_6",
                 "name": "Facebook",
-                "enabled": false,
+                "enabled": true,
                 "props": {
                   "Method": "GET",
                   "TargetRPS": 5,
@@ -59,7 +71,7 @@
             "type": "SimpleThreadGroup",
             "id": "id_20260207150735.007794_7",
             "name": "Thread Group",
-            "enabled": true,
+            "enabled": false,
             "props": {
               "Iterations": 10,
               "Users": 1
@@ -115,7 +127,8 @@
             "name": "RPS Group",
             "enabled": true,
             "props": {
-              "DurationMS": 60000,
+              "GracefulShutdownMS": 0,
+              "ProfileBlocks": [],
               "RPS": 10,
               "Users": 10
             },
@@ -132,6 +145,58 @@
                 }
               }
             ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "Parametrization",
+      "plan": {
+        "type": "TestPlan",
+        "id": "id_20260209191418.577375_15",
+        "name": "Test Plan",
+        "enabled": true,
+        "children": [
+          {
+            "type": "SimpleThreadGroup",
+            "id": "id_20260209191418.577392_16",
+            "name": "Assertions",
+            "enabled": true,
+            "props": {
+              "Iterations": 1,
+              "Users": 1
+            },
+            "children": [
+              {
+                "type": "PauseController",
+                "id": "id_20260209191822.127845_18",
+                "name": "Pause",
+                "enabled": true,
+                "props": {
+                  "DurationMS": 0
+                }
+              },
+              {
+                "type": "PauseController",
+                "id": "id_20260209191826.212091_19",
+                "name": "Pause",
+                "enabled": true,
+                "props": {
+                  "DurationMS": 0
+                }
+              }
+            ]
+          },
+          {
+            "type": "HttpSampler",
+            "id": "id_20260209191658.993825_17",
+            "name": "Extractors",
+            "enabled": true,
+            "props": {
+              "Method": "GET",
+              "TargetRPS": 0,
+              "Url": "http://localhost"
+            }
           }
         ]
       }

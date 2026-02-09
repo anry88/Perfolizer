@@ -21,7 +21,6 @@ func init() {
 			BaseElement:      core.NewBaseElement(name),
 			Users:            core.GetInt(props, "Users", 10),
 			RPS:              core.GetFloat(props, "RPS", 10.0),
-			Duration:         time.Duration(core.GetInt(props, "DurationMS", 60000)) * time.Millisecond,
 			ProfileBlocks:    parseRPSProfileBlocks(props),
 			GracefulShutdown: time.Duration(core.GetInt(props, "GracefulShutdownMS", 0)) * time.Millisecond,
 		}
@@ -131,7 +130,6 @@ type RPSThreadGroup struct {
 	core.BaseElement
 	Users            int     // Max concurrent workers
 	RPS              float64 // Base Requests (Transactions) per second for samplers with TargetRPS=0
-	Duration         time.Duration
 	ProfileBlocks    []RPSProfileBlock
 	GracefulShutdown time.Duration
 }
@@ -142,13 +140,12 @@ type RPSProfileBlock struct {
 	ProfilePercent float64
 }
 
-func NewRPSThreadGroup(name string, rps float64, duration time.Duration) *RPSThreadGroup {
+func NewRPSThreadGroup(name string, rps float64) *RPSThreadGroup {
 	return &RPSThreadGroup{
 		BaseElement:      core.NewBaseElement(name),
 		Users:            10, // Default, maybe auto-scale in future
 		RPS:              rps,
-		Duration:         duration,
-		ProfileBlocks:    nil,
+		ProfileBlocks:    []RPSProfileBlock{{RampUp: 0, StepDuration: 60 * time.Second, ProfilePercent: 100}},
 		GracefulShutdown: 0,
 	}
 }
@@ -170,7 +167,6 @@ func (tg *RPSThreadGroup) GetProps() map[string]interface{} {
 	return map[string]interface{}{
 		"Users":              tg.Users,
 		"RPS":                tg.RPS,
-		"DurationMS":         tg.Duration.Milliseconds(),
 		"ProfileBlocks":      blocks,
 		"GracefulShutdownMS": tg.GracefulShutdown.Milliseconds(),
 	}
@@ -204,12 +200,12 @@ func (tg *RPSThreadGroup) Start(ctx context.Context, runner core.Runner) {
 	go func() {
 		defer cancel()
 
-		if len(tg.ProfileBlocks) > 0 {
-			runRPSProfileBlocks(groupCtx, tg.ProfileBlocks, profileScale)
-		} else if !waitForDuration(groupCtx, tg.Duration) {
+		if len(tg.ProfileBlocks) == 0 {
+			requestStop()
 			return
 		}
 
+		runRPSProfileBlocks(groupCtx, tg.ProfileBlocks, profileScale)
 		requestStop()
 		if tg.GracefulShutdown > 0 {
 			_ = waitForDuration(groupCtx, tg.GracefulShutdown)
@@ -267,8 +263,12 @@ func (tg *RPSThreadGroup) Start(ctx context.Context, runner core.Runner) {
 }
 
 func parseRPSProfileBlocks(props map[string]interface{}) []RPSProfileBlock {
-	raw, ok := props["ProfileBlocks"]
-	if !ok || raw == nil {
+	raw := props["ProfileBlocks"]
+	if raw == nil {
+		legacyDuration := time.Duration(core.GetInt(props, "DurationMS", 0)) * time.Millisecond
+		if legacyDuration > 0 {
+			return []RPSProfileBlock{{RampUp: 0, StepDuration: legacyDuration, ProfilePercent: 100}}
+		}
 		return nil
 	}
 
