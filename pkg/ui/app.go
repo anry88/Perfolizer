@@ -27,6 +27,30 @@ const maxBodyPreviewChars = 20000
 const prefToggleEnabledKey = "toggleEnabledKey"
 const defaultToggleEnabledKey = "Ctrl+E"
 
+const (
+	componentSimpleThreadGroup = "Simple Thread Group"
+	componentRPSThreadGroup    = "RPS Thread Group"
+	componentHTTPSampler       = "HTTP Sampler"
+	componentLoopController    = "Loop Controller"
+	componentIfController      = "If Controller"
+	componentPauseController   = "Pause Controller"
+)
+
+var threadGroupComponentTypes = []string{
+	componentSimpleThreadGroup,
+	componentRPSThreadGroup,
+}
+
+var samplerComponentTypes = []string{
+	componentHTTPSampler,
+}
+
+var controllerComponentTypes = []string{
+	componentLoopController,
+	componentIfController,
+	componentPauseController,
+}
+
 // treeWithContextMenu wraps the tree so right-click shows Enable/Disable menu for the selected node.
 type treeWithContextMenu struct {
 	widget.BaseWidget
@@ -975,6 +999,78 @@ func (pa *PerfolizerApp) addPlan() {
 	pa.Tree.OpenBranch(fmt.Sprintf("plan:%d", pa.Project.PlanCount()-1))
 }
 
+func (pa *PerfolizerApp) elementTypeName(el core.TestElement) string {
+	switch el.(type) {
+	case *elements.SimpleThreadGroup:
+		return componentSimpleThreadGroup
+	case *elements.RPSThreadGroup:
+		return componentRPSThreadGroup
+	case *elements.HttpSampler:
+		return componentHTTPSampler
+	case *elements.LoopController:
+		return componentLoopController
+	case *elements.IfController:
+		return componentIfController
+	case *elements.PauseController:
+		return componentPauseController
+	default:
+		return "Test Plan"
+	}
+}
+
+func (pa *PerfolizerApp) canContainScenarioChildren(parent core.TestElement) bool {
+	switch parent.(type) {
+	case *elements.SimpleThreadGroup, *elements.RPSThreadGroup, *elements.LoopController, *elements.IfController:
+		return true
+	default:
+		return false
+	}
+}
+
+func (pa *PerfolizerApp) allowedComponentTypes(planIdx int, parent core.TestElement) map[string]bool {
+	allowed := make(map[string]bool)
+	if pa.Project == nil || parent == nil || planIdx < 0 || planIdx >= pa.Project.PlanCount() {
+		return allowed
+	}
+
+	root := pa.Project.Plans[planIdx].Root
+	if root != nil && parent.ID() == root.ID() {
+		for _, typeName := range threadGroupComponentTypes {
+			allowed[typeName] = true
+		}
+	}
+
+	if pa.canContainScenarioChildren(parent) {
+		for _, typeName := range samplerComponentTypes {
+			allowed[typeName] = true
+		}
+		for _, typeName := range controllerComponentTypes {
+			allowed[typeName] = true
+		}
+	}
+
+	return allowed
+}
+
+func (pa *PerfolizerApp) canAddComponent(planIdx int, parent core.TestElement, typeName string) bool {
+	return pa.allowedComponentTypes(planIdx, parent)[typeName]
+}
+
+func (pa *PerfolizerApp) newAddComponentSection(planIdx int, parent core.TestElement, title string, types []string, allowed map[string]bool) fyne.CanvasObject {
+	buttons := make([]fyne.CanvasObject, 0, len(types))
+	for _, typeName := range types {
+		currentType := typeName
+		button := widget.NewButton(currentType, func() {
+			pa.doAddElement(planIdx, parent, currentType)
+		})
+		if !allowed[currentType] {
+			button.Disable()
+		}
+		buttons = append(buttons, button)
+	}
+	return widget.NewCard(title, "", container.NewVBox(buttons...))
+}
+
 func (pa *PerfolizerApp) addElement() {
 	planIdx, el := pa.resolveNode(pa.CurrentNodeID)
 	if planIdx < 0 {
@@ -990,34 +1086,50 @@ func (pa *PerfolizerApp) addElement() {
 		return
 	}
 
-	// Simple dialog with buttons for now
-	d := dialog.NewCustom("Select Element Type", "Cancel",
+	allowed := pa.allowedComponentTypes(planIdx, parent)
+	hint := widget.NewLabel("")
+	if len(allowed) == 0 {
+		hint.SetText("No components can be added to this node.")
+	}
+
+	d := dialog.NewCustom(
+		"Add component",
+		"Cancel",
 		container.NewVBox(
-			widget.NewButton("Simple Thread Group", func() { pa.doAddElement(planIdx, parent, "Simple Thread Group") }),
-			widget.NewButton("RPS Thread Group", func() { pa.doAddElement(planIdx, parent, "RPS Thread Group") }),
-			widget.NewButton("HTTP Sampler", func() { pa.doAddElement(planIdx, parent, "HTTP Sampler") }),
-			widget.NewButton("If Controller", func() { pa.doAddElement(planIdx, parent, "If Controller") }),
-			widget.NewButton("Pause Controller", func() { pa.doAddElement(planIdx, parent, "Pause Controller") }),
-		), pa.Window)
+			widget.NewLabel(fmt.Sprintf("Parent: %s (%s)", parent.Name(), pa.elementTypeName(parent))),
+			hint,
+			pa.newAddComponentSection(planIdx, parent, "Thread Groups", threadGroupComponentTypes, allowed),
+			pa.newAddComponentSection(planIdx, parent, "Samplers", samplerComponentTypes, allowed),
+			pa.newAddComponentSection(planIdx, parent, "Controllers", controllerComponentTypes, allowed),
+		),
+		pa.Window,
+	)
 	d.Show()
 }
 
 func (pa *PerfolizerApp) doAddElement(planIdx int, parent core.TestElement, typeName string) {
+	if !pa.canAddComponent(planIdx, parent, typeName) {
+		dialog.ShowInformation("Invalid parent", "This component cannot be added to the selected node.", pa.Window)
+		return
+	}
+
 	if top := pa.Window.Canvas().Overlays().Top(); top != nil {
 		top.Hide()
 	}
 
 	var newEl core.TestElement
 	switch typeName {
-	case "Simple Thread Group":
+	case componentSimpleThreadGroup:
 		newEl = elements.NewSimpleThreadGroup("Thread Group", 1, 1)
-	case "RPS Thread Group":
+	case componentRPSThreadGroup:
 		newEl = elements.NewRPSThreadGroup("RPS Group", 10.0)
-	case "HTTP Sampler":
+	case componentHTTPSampler:
 		newEl = &elements.HttpSampler{BaseElement: core.NewBaseElement("HTTP Request"), Method: "GET", Url: "http://localhost"}
-	case "If Controller":
+	case componentLoopController:
+		newEl = elements.NewLoopController("Loop Controller", 1)
+	case componentIfController:
 		newEl = elements.NewIfController("If Controller", func(ctx *core.Context) bool { return true })
-	case "Pause Controller":
+	case componentPauseController:
 		newEl = &elements.PauseController{BaseElement: core.NewBaseElement("Pause"), Duration: 1000}
 	}
 
