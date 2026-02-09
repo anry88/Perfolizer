@@ -14,7 +14,11 @@ func main() {
 		log.Fatalf("failed to load agent config %q: %v", cfgPath, err)
 	}
 
-	srv := agent.NewServer()
+	srv := agent.NewServer(agent.ServerOptions{
+		EnableRemoteRestart: cfg.EnableRemoteRestart,
+		RestartToken:        cfg.RemoteRestartToken,
+		RestartCommand:      cfg.RemoteRestartCommand,
+	})
 	addr := cfg.ListenAddr()
 
 	log.Printf("Perfolizer agent listening on %s (config: %s)", addr, cfgPath)

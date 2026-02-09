@@ -19,19 +19,51 @@ type AgentClient struct {
 	httpClient *http.Client
 }
 
+type AgentHostMetrics struct {
+	CPUUtilizationPercent float64
+	MemoryTotalBytes      uint64
+	MemoryUsedBytes       uint64
+	MemoryUsedPercent     float64
+	DiskPath              string
+	DiskTotalBytes        uint64
+	DiskUsedBytes         uint64
+	DiskUsedPercent       float64
+}
+
+type AgentMetricsSnapshot struct {
+	Data    map[string]core.Metric
+	Running bool
+	Host    AgentHostMetrics
+}
+
+type RestartProcessRequest struct {
+	Command string `json:"command,omitempty"`
+}
+
+func NewAgentClient(baseURL string) *AgentClient {
+	return &AgentClient{
+		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+}
+
 func NewAgentClientFromConfig() (*AgentClient, config.AgentConfig, error) {
 	cfgPath := config.ResolveAgentConfigPath()
 	cfg, err := config.LoadAgentConfig(cfgPath)
 	if err != nil {
 		return nil, cfg, err
 	}
-	client := &AgentClient{
-		baseURL: cfg.BaseURL(),
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-	}
+	client := NewAgentClient(cfg.BaseURL())
 	return client, cfg, nil
+}
+
+func (c *AgentClient) BaseURL() string {
+	if c == nil {
+		return ""
+	}
+	return c.baseURL
 }
 
 func (c *AgentClient) RunTest(plan core.TestElement) error {
@@ -81,27 +113,37 @@ func (c *AgentClient) StopTest() error {
 }
 
 func (c *AgentClient) FetchMetrics() (map[string]core.Metric, bool, error) {
+	snapshot, err := c.FetchSnapshot()
+	if err != nil {
+		return nil, false, err
+	}
+	return snapshot.Data, snapshot.Running, nil
+}
+
+func (c *AgentClient) FetchSnapshot() (AgentMetricsSnapshot, error) {
+	var out AgentMetricsSnapshot
+
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/metrics", nil)
 	if err != nil {
-		return nil, false, fmt.Errorf("create metrics request: %w", err)
+		return out, fmt.Errorf("create metrics request: %w", err)
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, false, fmt.Errorf("send metrics request: %w", err)
+		return out, fmt.Errorf("send metrics request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		message, _ := io.ReadAll(resp.Body)
-		return nil, false, fmt.Errorf("agent returned %d: %s", resp.StatusCode, strings.TrimSpace(string(message)))
+		return out, fmt.Errorf("agent returned %d: %s", resp.StatusCode, strings.TrimSpace(string(message)))
 	}
 
-	data, running, err := parsePrometheusMetrics(resp.Body)
+	snapshot, err := parsePrometheusSnapshot(resp.Body)
 	if err != nil {
-		return nil, false, err
+		return out, err
 	}
-	return data, running, nil
+	return snapshot, nil
 }
 
 func (c *AgentClient) DebugHTTP(request core.DebugHTTPRequest) (core.DebugHTTPExchange, error) {
@@ -136,9 +178,52 @@ func (c *AgentClient) DebugHTTP(request core.DebugHTTPRequest) (core.DebugHTTPEx
 	return exchange, nil
 }
 
+func (c *AgentClient) RestartProcess(command, adminToken string) error {
+	payload := RestartProcessRequest{
+		Command: strings.TrimSpace(command),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal restart process payload: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/admin/restart", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create restart process request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token := strings.TrimSpace(adminToken); token != "" {
+		req.Header.Set("X-Perfolizer-Admin-Token", token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send restart process request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		message, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("agent returned %d: %s", resp.StatusCode, strings.TrimSpace(string(message)))
+	}
+
+	return nil
+}
+
 func parsePrometheusMetrics(r io.Reader) (map[string]core.Metric, bool, error) {
+	snapshot, err := parsePrometheusSnapshot(r)
+	if err != nil {
+		return nil, false, err
+	}
+	return snapshot.Data, snapshot.Running, nil
+}
+
+func parsePrometheusSnapshot(r io.Reader) (AgentMetricsSnapshot, error) {
+	out := AgentMetricsSnapshot{
+		Data: make(map[string]core.Metric),
+	}
+
 	metrics := make(map[string]core.Metric)
-	running := false
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -158,14 +243,41 @@ func parsePrometheusMetrics(r io.Reader) (map[string]core.Metric, bool, error) {
 			continue
 		}
 
-		name, sampler, err := parseMetricSpec(spec)
+		name, labels, err := parseMetricWithLabels(spec)
 		if err != nil {
 			continue
 		}
+		sampler := labels["sampler"]
 
 		if name == "perfolizer_test_running" {
-			running = value > 0
+			out.Running = value > 0
 			continue
+		}
+
+		switch name {
+		case "perfolizer_host_cpu_utilization_percent":
+			out.Host.CPUUtilizationPercent = value
+		case "perfolizer_host_memory_total_bytes":
+			out.Host.MemoryTotalBytes = uint64(value)
+		case "perfolizer_host_memory_used_bytes":
+			out.Host.MemoryUsedBytes = uint64(value)
+		case "perfolizer_host_memory_used_percent":
+			out.Host.MemoryUsedPercent = value
+		case "perfolizer_host_disk_total_bytes":
+			out.Host.DiskTotalBytes = uint64(value)
+			if path, ok := labels["path"]; ok {
+				out.Host.DiskPath = path
+			}
+		case "perfolizer_host_disk_used_bytes":
+			out.Host.DiskUsedBytes = uint64(value)
+			if path, ok := labels["path"]; ok {
+				out.Host.DiskPath = path
+			}
+		case "perfolizer_host_disk_used_percent":
+			out.Host.DiskUsedPercent = value
+			if path, ok := labels["path"]; ok {
+				out.Host.DiskPath = path
+			}
 		}
 
 		if sampler == "" {
@@ -189,32 +301,42 @@ func parsePrometheusMetrics(r io.Reader) (map[string]core.Metric, bool, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, false, fmt.Errorf("read metrics: %w", err)
+		return out, fmt.Errorf("read metrics: %w", err)
 	}
 
 	if _, ok := metrics["Total"]; !ok {
 		metrics["Total"] = core.Metric{}
 	}
 
-	return metrics, running, nil
+	out.Data = metrics
+	return out, nil
 }
 
 func parseMetricSpec(spec string) (string, string, error) {
+	name, labels, err := parseMetricWithLabels(spec)
+	if err != nil {
+		return "", "", err
+	}
+	return name, labels["sampler"], nil
+}
+
+func parseMetricWithLabels(spec string) (string, map[string]string, error) {
 	open := strings.IndexByte(spec, '{')
 	if open == -1 {
-		return spec, "", nil
+		return spec, map[string]string{}, nil
 	}
 
 	close := strings.LastIndexByte(spec, '}')
 	if close == -1 || close < open {
-		return "", "", fmt.Errorf("invalid metric labels: %s", spec)
+		return "", nil, fmt.Errorf("invalid metric labels: %s", spec)
 	}
 
 	name := spec[:open]
 	labelSet := spec[open+1 : close]
 	if labelSet == "" {
-		return name, "", nil
+		return name, map[string]string{}, nil
 	}
+	labels := make(map[string]string)
 
 	for _, pair := range strings.Split(labelSet, ",") {
 		pair = strings.TrimSpace(pair)
@@ -225,16 +347,14 @@ func parseMetricSpec(spec string) (string, string, error) {
 		if len(kv) != 2 {
 			continue
 		}
-		if strings.TrimSpace(kv[0]) != "sampler" {
-			continue
-		}
+		key := strings.TrimSpace(kv[0])
 		val := strings.TrimSpace(kv[1])
 		unquoted, err := strconv.Unquote(val)
 		if err != nil {
-			return name, "", err
+			return name, nil, err
 		}
-		return name, unquoted, nil
+		labels[key] = unquoted
 	}
 
-	return name, "", nil
+	return name, labels, nil
 }

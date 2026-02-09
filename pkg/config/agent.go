@@ -15,10 +15,13 @@ const (
 )
 
 type AgentConfig struct {
-	ListenHost        string `json:"listen_host"`
-	Port              int    `json:"port"`
-	UIPollIntervalSec int    `json:"ui_poll_interval_seconds"`
-	UIConnectHost     string `json:"ui_connect_host,omitempty"`
+	ListenHost           string `json:"listen_host"`
+	Port                 int    `json:"port"`
+	UIPollIntervalSec    int    `json:"ui_poll_interval_seconds"`
+	UIConnectHost        string `json:"ui_connect_host,omitempty"`
+	EnableRemoteRestart  bool   `json:"enable_remote_restart,omitempty"`
+	RemoteRestartToken   string `json:"remote_restart_token,omitempty"`
+	RemoteRestartCommand string `json:"remote_restart_command,omitempty"`
 }
 
 func DefaultAgentConfig() AgentConfig {

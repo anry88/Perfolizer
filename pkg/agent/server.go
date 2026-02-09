@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os/exec"
 	"perfolizer/pkg/core"
 	_ "perfolizer/pkg/elements"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +23,7 @@ import (
 const maxPlanBodyBytes = 10 << 20 // 10 MiB
 const maxDebugPayloadBytes = 2 << 20
 const maxDebugBodyBytes = 1 << 20 // 1 MiB
+const maxRestartPayloadBytes = 8 << 10
 
 var ErrAlreadyRunning = errors.New("test is already running")
 
@@ -32,14 +36,27 @@ type Server struct {
 
 	httpClient *http.Client
 	hostStats  *hostMetricsCollector
+
+	enableRemoteRestart bool
+	restartToken        string
+	restartCommand      string
 }
 
-func NewServer() *Server {
+type ServerOptions struct {
+	EnableRemoteRestart bool
+	RestartToken        string
+	RestartCommand      string
+}
+
+func NewServer(options ServerOptions) *Server {
 	return &Server{
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
-		hostStats: newHostMetricsCollector(),
+		hostStats:           newHostMetricsCollector(),
+		enableRemoteRestart: options.EnableRemoteRestart,
+		restartToken:        strings.TrimSpace(options.RestartToken),
+		restartCommand:      strings.TrimSpace(options.RestartCommand),
 	}
 }
 
@@ -50,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/debug/http", s.handleDebugHTTP)
 	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/admin/restart", s.handleRemoteRestart)
 	return mux
 }
 
@@ -270,6 +288,90 @@ func (s *Server) handleDebugHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeDebugJSON(w, http.StatusOK, exchange)
+}
+
+type restartRequest struct {
+	Command string `json:"command"`
+}
+
+func (s *Server) handleRemoteRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.enableRemoteRestart {
+		http.Error(w, "remote restart is disabled", http.StatusForbidden)
+		return
+	}
+
+	expectedToken := strings.TrimSpace(s.restartToken)
+	if expectedToken != "" {
+		token := strings.TrimSpace(r.Header.Get("X-Perfolizer-Admin-Token"))
+		if token != expectedToken {
+			http.Error(w, "invalid admin token", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	payload := restartRequest{}
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRestartPayloadBytes)
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, fmt.Sprintf("invalid restart payload: %v", err), http.StatusBadRequest)
+			return
+		}
+	}
+
+	command := strings.TrimSpace(payload.Command)
+	if command == "" {
+		command = s.restartCommand
+	}
+	if command == "" {
+		http.Error(w, "restart command is empty", http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte("restart scheduled"))
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	go executeRestartCommand(command)
+}
+
+func executeRestartCommand(raw string) {
+	command := strings.TrimSpace(raw)
+	if command == "" {
+		return
+	}
+
+	time.Sleep(350 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-lc", command)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(output))
+		if msg == "" {
+			log.Printf("remote restart command failed: %v", err)
+			return
+		}
+		log.Printf("remote restart command failed: %v: %s", err, msg)
+		return
+	}
+
+	if msg := strings.TrimSpace(string(output)); msg != "" {
+		log.Printf("remote restart command output: %s", msg)
+	}
 }
 
 func writeDebugJSON(w http.ResponseWriter, status int, payload core.DebugHTTPExchange) {
