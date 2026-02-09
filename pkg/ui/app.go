@@ -72,7 +72,12 @@ func (r *treeWithContextMenuRenderer) Refresh() {}
 // uriPath returns a filesystem path from a fyne URI (handles file:// on Windows).
 func uriPath(uri fyne.URI) string {
 	p := uri.Path()
-	if p != "" && p[0] == '/' && (len(p) < 2 || p[1] != '/') {
+	// file:///C:/... is represented as /C:/...; strip only that Windows URI prefix.
+	if len(p) >= 4 &&
+		p[0] == '/' &&
+		((p[1] >= 'a' && p[1] <= 'z') || (p[1] >= 'A' && p[1] <= 'Z')) &&
+		p[2] == ':' &&
+		p[3] == '/' {
 		p = p[1:]
 	}
 	return filepath.FromSlash(p)
