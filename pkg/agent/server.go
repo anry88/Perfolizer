@@ -31,6 +31,7 @@ type Server struct {
 	stats   *core.StatsRunner
 
 	httpClient *http.Client
+	hostStats  *hostMetricsCollector
 }
 
 func NewServer() *Server {
@@ -38,6 +39,7 @@ func NewServer() *Server {
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
+		hostStats: newHostMetricsCollector(),
 	}
 }
 
@@ -174,7 +176,11 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	running, snapshot := s.Snapshot()
-	metrics := renderPrometheusMetrics(running, snapshot)
+	hostMetrics := hostMetricsSnapshot{}
+	if s.hostStats != nil {
+		hostMetrics = s.hostStats.collect()
+	}
+	metrics := renderPrometheusMetrics(running, snapshot, hostMetrics)
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	_, _ = io.WriteString(w, metrics)
@@ -300,7 +306,7 @@ func trimBody(body string, maxLen int) bodySlice {
 	}
 }
 
-func renderPrometheusMetrics(running bool, snapshot map[string]core.Metric) string {
+func renderPrometheusMetrics(running bool, snapshot map[string]core.Metric, host hostMetricsSnapshot) string {
 	var b strings.Builder
 
 	b.WriteString("# HELP perfolizer_test_running Test running state (1=running, 0=idle).\n")
@@ -339,5 +345,150 @@ func renderPrometheusMetrics(running bool, snapshot map[string]core.Metric) stri
 		fmt.Fprintf(&b, "perfolizer_errors_total{sampler=%s} %d\n", label, metric.TotalErrors)
 	}
 
+	appendHostMetrics(&b, host)
+
 	return b.String()
+}
+
+func appendHostMetrics(b *strings.Builder, host hostMetricsSnapshot) {
+	b.WriteString("# HELP perfolizer_host_cpu_idle_percent Host CPU idle time percent.\n")
+	b.WriteString("# TYPE perfolizer_host_cpu_idle_percent gauge\n")
+	b.WriteString("# HELP perfolizer_host_cpu_user_percent Host CPU user time percent.\n")
+	b.WriteString("# TYPE perfolizer_host_cpu_user_percent gauge\n")
+	b.WriteString("# HELP perfolizer_host_cpu_system_percent Host CPU system time percent.\n")
+	b.WriteString("# TYPE perfolizer_host_cpu_system_percent gauge\n")
+	b.WriteString("# HELP perfolizer_host_cpu_utilization_percent Host CPU utilization percent.\n")
+	b.WriteString("# TYPE perfolizer_host_cpu_utilization_percent gauge\n")
+	if host.CPUAvailable {
+		fmt.Fprintf(b, "perfolizer_host_cpu_idle_percent %.6f\n", host.CPUIdlePercent)
+		fmt.Fprintf(b, "perfolizer_host_cpu_user_percent %.6f\n", host.CPUUserPercent)
+		fmt.Fprintf(b, "perfolizer_host_cpu_system_percent %.6f\n", host.CPUSystemPercent)
+		fmt.Fprintf(b, "perfolizer_host_cpu_utilization_percent %.6f\n", host.CPUUtilizationPct)
+	}
+
+	b.WriteString("# HELP perfolizer_host_context_switches_total Host context switches total (if supported).\n")
+	b.WriteString("# TYPE perfolizer_host_context_switches_total counter\n")
+	if host.HasContextSwitches {
+		fmt.Fprintf(b, "perfolizer_host_context_switches_total %d\n", host.ContextSwitchesTotal)
+	}
+
+	b.WriteString("# HELP perfolizer_host_cpu_throttled_total CPU throttled periods total from cgroup stats (if available).\n")
+	b.WriteString("# TYPE perfolizer_host_cpu_throttled_total counter\n")
+	if host.HasThrottledTotal {
+		fmt.Fprintf(b, "perfolizer_host_cpu_throttled_total %d\n", host.ThrottledTotal)
+	}
+
+	b.WriteString("# HELP perfolizer_host_cpu_throttled_seconds_total CPU throttled time total in seconds (if available).\n")
+	b.WriteString("# TYPE perfolizer_host_cpu_throttled_seconds_total counter\n")
+	if host.HasThrottledSeconds {
+		fmt.Fprintf(b, "perfolizer_host_cpu_throttled_seconds_total %.6f\n", host.ThrottledSeconds)
+	}
+
+	b.WriteString("# HELP perfolizer_host_memory_total_bytes Host memory total bytes.\n")
+	b.WriteString("# TYPE perfolizer_host_memory_total_bytes gauge\n")
+	b.WriteString("# HELP perfolizer_host_memory_used_bytes Host memory used bytes.\n")
+	b.WriteString("# TYPE perfolizer_host_memory_used_bytes gauge\n")
+	b.WriteString("# HELP perfolizer_host_memory_free_bytes Host memory free bytes.\n")
+	b.WriteString("# TYPE perfolizer_host_memory_free_bytes gauge\n")
+	b.WriteString("# HELP perfolizer_host_memory_available_bytes Host memory available bytes.\n")
+	b.WriteString("# TYPE perfolizer_host_memory_available_bytes gauge\n")
+	b.WriteString("# HELP perfolizer_host_memory_cached_bytes Host memory cached bytes.\n")
+	b.WriteString("# TYPE perfolizer_host_memory_cached_bytes gauge\n")
+	b.WriteString("# HELP perfolizer_host_memory_buffers_bytes Host memory buffers bytes.\n")
+	b.WriteString("# TYPE perfolizer_host_memory_buffers_bytes gauge\n")
+	b.WriteString("# HELP perfolizer_host_memory_used_percent Host memory utilization percent.\n")
+	b.WriteString("# TYPE perfolizer_host_memory_used_percent gauge\n")
+	if host.MemoryAvailable {
+		fmt.Fprintf(b, "perfolizer_host_memory_total_bytes %d\n", host.MemoryTotalBytes)
+		fmt.Fprintf(b, "perfolizer_host_memory_used_bytes %d\n", host.MemoryUsedBytes)
+		fmt.Fprintf(b, "perfolizer_host_memory_free_bytes %d\n", host.MemoryFreeBytes)
+		fmt.Fprintf(b, "perfolizer_host_memory_available_bytes %d\n", host.MemoryAvailableBytes)
+		fmt.Fprintf(b, "perfolizer_host_memory_cached_bytes %d\n", host.MemoryCachedBytes)
+		fmt.Fprintf(b, "perfolizer_host_memory_buffers_bytes %d\n", host.MemoryBuffersBytes)
+		fmt.Fprintf(b, "perfolizer_host_memory_used_percent %.6f\n", host.MemoryUsedPercent)
+	}
+
+	b.WriteString("# HELP perfolizer_host_swap_total_bytes Host swap total bytes.\n")
+	b.WriteString("# TYPE perfolizer_host_swap_total_bytes gauge\n")
+	b.WriteString("# HELP perfolizer_host_swap_used_bytes Host swap used bytes.\n")
+	b.WriteString("# TYPE perfolizer_host_swap_used_bytes gauge\n")
+	b.WriteString("# HELP perfolizer_host_swap_free_bytes Host swap free bytes.\n")
+	b.WriteString("# TYPE perfolizer_host_swap_free_bytes gauge\n")
+	b.WriteString("# HELP perfolizer_host_swap_used_percent Host swap used percent.\n")
+	b.WriteString("# TYPE perfolizer_host_swap_used_percent gauge\n")
+	b.WriteString("# HELP perfolizer_host_swap_in_bytes_total Host swap in bytes total.\n")
+	b.WriteString("# TYPE perfolizer_host_swap_in_bytes_total counter\n")
+	b.WriteString("# HELP perfolizer_host_swap_out_bytes_total Host swap out bytes total.\n")
+	b.WriteString("# TYPE perfolizer_host_swap_out_bytes_total counter\n")
+	if host.SwapAvailable {
+		fmt.Fprintf(b, "perfolizer_host_swap_total_bytes %d\n", host.SwapTotalBytes)
+		fmt.Fprintf(b, "perfolizer_host_swap_used_bytes %d\n", host.SwapUsedBytes)
+		fmt.Fprintf(b, "perfolizer_host_swap_free_bytes %d\n", host.SwapFreeBytes)
+		fmt.Fprintf(b, "perfolizer_host_swap_used_percent %.6f\n", host.SwapUsedPercent)
+		fmt.Fprintf(b, "perfolizer_host_swap_in_bytes_total %d\n", host.SwapInBytesTotal)
+		fmt.Fprintf(b, "perfolizer_host_swap_out_bytes_total %d\n", host.SwapOutBytesTotal)
+	}
+
+	b.WriteString("# HELP perfolizer_host_memory_page_faults_total Host memory page faults total (if supported).\n")
+	b.WriteString("# TYPE perfolizer_host_memory_page_faults_total counter\n")
+	if host.HasPageFaults {
+		fmt.Fprintf(b, "perfolizer_host_memory_page_faults_total %d\n", host.PageFaultsTotal)
+	}
+
+	b.WriteString("# HELP perfolizer_host_memory_major_page_faults_total Host memory major page faults total (if supported).\n")
+	b.WriteString("# TYPE perfolizer_host_memory_major_page_faults_total counter\n")
+	if host.HasMajorPageFaults {
+		fmt.Fprintf(b, "perfolizer_host_memory_major_page_faults_total %d\n", host.MajorPageFaultsTotal)
+	}
+
+	b.WriteString("# HELP perfolizer_host_memory_page_in_total Host memory pages paged in total (if supported).\n")
+	b.WriteString("# TYPE perfolizer_host_memory_page_in_total counter\n")
+	if host.HasPageIn {
+		fmt.Fprintf(b, "perfolizer_host_memory_page_in_total %d\n", host.PageInTotal)
+	}
+
+	b.WriteString("# HELP perfolizer_host_memory_page_out_total Host memory pages paged out total (if supported).\n")
+	b.WriteString("# TYPE perfolizer_host_memory_page_out_total counter\n")
+	if host.HasPageOut {
+		fmt.Fprintf(b, "perfolizer_host_memory_page_out_total %d\n", host.PageOutTotal)
+	}
+
+	pathLabel := strconv.Quote(host.DiskPath)
+	b.WriteString("# HELP perfolizer_host_disk_total_bytes Host disk total bytes for selected path.\n")
+	b.WriteString("# TYPE perfolizer_host_disk_total_bytes gauge\n")
+	b.WriteString("# HELP perfolizer_host_disk_used_bytes Host disk used bytes for selected path.\n")
+	b.WriteString("# TYPE perfolizer_host_disk_used_bytes gauge\n")
+	b.WriteString("# HELP perfolizer_host_disk_free_bytes Host disk free bytes for selected path.\n")
+	b.WriteString("# TYPE perfolizer_host_disk_free_bytes gauge\n")
+	b.WriteString("# HELP perfolizer_host_disk_used_percent Host disk utilization percent for selected path.\n")
+	b.WriteString("# TYPE perfolizer_host_disk_used_percent gauge\n")
+	if host.DiskAvailable {
+		fmt.Fprintf(b, "perfolizer_host_disk_total_bytes{path=%s} %d\n", pathLabel, host.DiskTotalBytes)
+		fmt.Fprintf(b, "perfolizer_host_disk_used_bytes{path=%s} %d\n", pathLabel, host.DiskUsedBytes)
+		fmt.Fprintf(b, "perfolizer_host_disk_free_bytes{path=%s} %d\n", pathLabel, host.DiskFreeBytes)
+		fmt.Fprintf(b, "perfolizer_host_disk_used_percent{path=%s} %.6f\n", pathLabel, host.DiskUsedPercent)
+	}
+
+	b.WriteString("# HELP perfolizer_host_disk_read_bytes_total Host disk read bytes total across visible devices.\n")
+	b.WriteString("# TYPE perfolizer_host_disk_read_bytes_total counter\n")
+	b.WriteString("# HELP perfolizer_host_disk_write_bytes_total Host disk write bytes total across visible devices.\n")
+	b.WriteString("# TYPE perfolizer_host_disk_write_bytes_total counter\n")
+	b.WriteString("# HELP perfolizer_host_disk_read_ops_total Host disk read operations total across visible devices.\n")
+	b.WriteString("# TYPE perfolizer_host_disk_read_ops_total counter\n")
+	b.WriteString("# HELP perfolizer_host_disk_write_ops_total Host disk write operations total across visible devices.\n")
+	b.WriteString("# TYPE perfolizer_host_disk_write_ops_total counter\n")
+	b.WriteString("# HELP perfolizer_host_disk_io_time_seconds_total Host disk io busy time total across visible devices.\n")
+	b.WriteString("# TYPE perfolizer_host_disk_io_time_seconds_total counter\n")
+	b.WriteString("# HELP perfolizer_host_disk_utilization_percent Host disk utilization percent derived from io_time deltas.\n")
+	b.WriteString("# TYPE perfolizer_host_disk_utilization_percent gauge\n")
+	fmt.Fprintf(b, "perfolizer_host_disk_read_bytes_total %d\n", host.DiskReadBytesTotal)
+	fmt.Fprintf(b, "perfolizer_host_disk_write_bytes_total %d\n", host.DiskWriteBytesTotal)
+	fmt.Fprintf(b, "perfolizer_host_disk_read_ops_total %d\n", host.DiskReadOpsTotal)
+	fmt.Fprintf(b, "perfolizer_host_disk_write_ops_total %d\n", host.DiskWriteOpsTotal)
+	if host.HasDiskIOTime {
+		fmt.Fprintf(b, "perfolizer_host_disk_io_time_seconds_total %.6f\n", host.DiskIOTimeSeconds)
+	}
+	if host.HasDiskUtilization {
+		fmt.Fprintf(b, "perfolizer_host_disk_utilization_percent %.6f\n", host.DiskUtilizationPct)
+	}
 }
