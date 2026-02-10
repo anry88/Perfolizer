@@ -554,13 +554,16 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 		updateDetails()
 	}
 
+	var refreshAgentList func()
 	agentList := widget.NewList(
 		func() int { return len(agentIDs) },
 		func() fyne.CanvasObject {
+			activeCheck := widget.NewCheck("Active", nil)
 			name := widget.NewLabel("Agent")
 			name.TextStyle = fyne.TextStyle{Bold: true}
 			details := widget.NewLabel("status: - | current test: -")
-			return container.NewVBox(name, details)
+			info := container.NewVBox(name, details)
+			return container.NewHBox(activeCheck, info)
 		},
 		func(i widget.ListItemID, obj fyne.CanvasObject) {
 			agentID := agentIDs[i]
@@ -572,21 +575,40 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 				}
 			}
 			runtime := pa.getAgentRuntimeState(agent.ID)
-			active := ""
-			if agent.ID == pa.activeAgentID {
-				active = " [active]"
-			}
 			testID := "-"
 			if runtime.CurrentTest != "" {
 				testID = runtime.CurrentTest
 			}
 			row := obj.(*fyne.Container)
-			row.Objects[0].(*widget.Label).SetText(fmt.Sprintf("%s%s", agent.Name, active))
-			row.Objects[1].(*widget.Label).SetText(fmt.Sprintf("status: %s | current test: %s", runtime.Status, testID))
+			activeCheck := row.Objects[0].(*widget.Check)
+			info := row.Objects[1].(*fyne.Container)
+			nameLabel := info.Objects[0].(*widget.Label)
+			detailsLabel := info.Objects[1].(*widget.Label)
+
+			nameLabel.SetText(agent.Name)
+			detailsLabel.SetText(fmt.Sprintf("status: %s | current test: %s", runtime.Status, testID))
+
+			activeCheck.OnChanged = nil
+			activeCheck.SetChecked(agent.ID == pa.activeAgentID)
+			currentAgentID := agent.ID
+			activeCheck.OnChanged = func(checked bool) {
+				if !checked {
+					// Keep one active agent selected at all times.
+					if pa.activeAgentID == currentAgentID {
+						activeCheck.SetChecked(true)
+					}
+					return
+				}
+				pa.activeAgentID = currentAgentID
+				pa.saveAgentsToPreferences()
+				selectedID = currentAgentID
+				updateDetails()
+				refreshAgentList()
+			}
 		},
 	)
 
-	refreshAgentList := func() {
+	refreshAgentList = func() {
 		agentList.Refresh()
 	}
 
@@ -717,16 +739,6 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 		pa.rebuildAgentClients()
 		pa.saveAgentsToPreferences()
 		refreshAll()
-		refreshAgentList()
-		updateDetails()
-	}
-
-	setActive := func() {
-		if selectedID == "" {
-			return
-		}
-		pa.activeAgentID = selectedID
-		pa.saveAgentsToPreferences()
 		refreshAgentList()
 		updateDetails()
 	}
@@ -890,7 +902,6 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 			),
 			container.NewHBox(
 				widget.NewButton("Save", saveSelected),
-				widget.NewButton("Set active", setActive),
 			),
 		)),
 		widget.NewCard("Runtime", "", container.NewVBox(
