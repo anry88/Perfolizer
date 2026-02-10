@@ -30,9 +30,10 @@ var ErrAlreadyRunning = errors.New("test is already running")
 type Server struct {
 	mu sync.RWMutex
 
-	running bool
-	cancel  context.CancelFunc
-	stats   *core.StatsRunner
+	running         bool
+	cancel          context.CancelFunc
+	stats           *core.StatsRunner
+	currentPlanName string
 
 	httpClient *http.Client
 	hostStats  *hostMetricsCollector
@@ -72,6 +73,11 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) Start(plan core.TestElement) error {
+	planName := strings.TrimSpace(plan.Name())
+	if planName == "" {
+		planName = "unnamed-plan"
+	}
+
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -82,8 +88,11 @@ func (s *Server) Start(plan core.TestElement) error {
 	s.stats = core.NewStatsRunner(ctx, nil)
 	s.running = true
 	s.cancel = cancel
+	s.currentPlanName = planName
 	stats := s.stats
 	s.mu.Unlock()
+
+	log.Printf("test started: plan=%q", planName)
 
 	go func() {
 		runPlan(ctx, plan, stats)
@@ -94,16 +103,20 @@ func (s *Server) Start(plan core.TestElement) error {
 	return nil
 }
 
-func (s *Server) Stop() {
+func (s *Server) Stop() (bool, string) {
 	s.mu.Lock()
+	wasRunning := s.running
+	planName := s.currentPlanName
 	cancel := s.cancel
 	s.running = false
 	s.cancel = nil
+	s.currentPlanName = ""
 	s.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
 	}
+	return wasRunning, planName
 }
 
 func (s *Server) Snapshot() (bool, map[string]core.Metric) {
@@ -122,8 +135,13 @@ func (s *Server) setStopped(stats *core.StatsRunner) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stats == stats {
+		planName := s.currentPlanName
 		s.running = false
 		s.cancel = nil
+		s.currentPlanName = ""
+		if planName != "" {
+			log.Printf("test completed: plan=%q", planName)
+		}
 	}
 }
 
@@ -162,12 +180,19 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("invalid test plan: %v", err), http.StatusBadRequest)
 		return
 	}
+	planName := strings.TrimSpace(plan.Name())
+	if planName == "" {
+		planName = "unnamed-plan"
+	}
+	log.Printf("run requested: from=%s plan=%q", r.RemoteAddr, planName)
 
 	if err := s.Start(plan); err != nil {
 		if errors.Is(err, ErrAlreadyRunning) {
+			log.Printf("run rejected: already running (from=%s plan=%q)", r.RemoteAddr, planName)
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
+		log.Printf("run failed: from=%s plan=%q err=%v", r.RemoteAddr, planName, err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -182,7 +207,16 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.Stop()
+	log.Printf("stop requested: from=%s", r.RemoteAddr)
+	wasRunning, planName := s.Stop()
+	if wasRunning {
+		if strings.TrimSpace(planName) == "" {
+			planName = "unknown"
+		}
+		log.Printf("test stop signal sent: plan=%q", planName)
+	} else {
+		log.Printf("stop ignored: no running test")
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("stopped"))
 }
@@ -300,6 +334,7 @@ func (s *Server) handleRemoteRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.enableRemoteRestart {
+		log.Printf("remote restart rejected: disabled (from=%s)", r.RemoteAddr)
 		http.Error(w, "remote restart is disabled", http.StatusForbidden)
 		return
 	}
@@ -308,6 +343,7 @@ func (s *Server) handleRemoteRestart(w http.ResponseWriter, r *http.Request) {
 	if expectedToken != "" {
 		token := strings.TrimSpace(r.Header.Get("X-Perfolizer-Admin-Token"))
 		if token != expectedToken {
+			log.Printf("remote restart rejected: invalid token (from=%s)", r.RemoteAddr)
 			http.Error(w, "invalid admin token", http.StatusUnauthorized)
 			return
 		}
@@ -324,13 +360,17 @@ func (s *Server) handleRemoteRestart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	command := strings.TrimSpace(payload.Command)
+	source := "request"
 	if command == "" {
 		command = s.restartCommand
+		source = "agent-config"
 	}
 	if command == "" {
+		log.Printf("remote restart rejected: empty command (from=%s)", r.RemoteAddr)
 		http.Error(w, "restart command is empty", http.StatusBadRequest)
 		return
 	}
+	log.Printf("remote restart requested: from=%s source=%s command=%q", r.RemoteAddr, source, command)
 
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte("restart scheduled"))
@@ -346,6 +386,7 @@ func executeRestartCommand(raw string) {
 	if command == "" {
 		return
 	}
+	log.Printf("remote restart executing command=%q", command)
 
 	time.Sleep(350 * time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -372,6 +413,7 @@ func executeRestartCommand(raw string) {
 	if msg := strings.TrimSpace(string(output)); msg != "" {
 		log.Printf("remote restart command output: %s", msg)
 	}
+	log.Printf("remote restart command completed successfully")
 }
 
 func writeDebugJSON(w http.ResponseWriter, status int, payload core.DebugHTTPExchange) {
