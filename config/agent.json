@@ -1,5 +1,5 @@
 {
-  "listen_host": "127.0.0.1",
+  "listen_host": "0.0.0.0",
   "port": 9090,
   "ui_poll_interval_seconds": 1
 }
