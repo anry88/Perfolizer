@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"perfolizer/assets/icons"
 	"perfolizer/pkg/core"
 	_ "perfolizer/pkg/elements"
 	"runtime"
@@ -66,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/run", s.handleRun)
 	mux.HandleFunc("/stop", s.handleStop)
 	mux.HandleFunc("/metrics", s.handleMetrics)
+	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/debug/http", s.handleDebugHTTP)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/admin/restart", s.handleRemoteRestart)
@@ -259,6 +261,17 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(icons.AgentBuildIconPNG())
 }
 
 func (s *Server) handleDebugHTTP(w http.ResponseWriter, r *http.Request) {
