@@ -7,6 +7,11 @@ const (
 	ParamTypeJSON   = "JSON"
 )
 
+// IsExtractor returns true if the parameter type is Regexp or JSON
+func (p Parameter) IsExtractor() bool {
+	return p.Type == ParamTypeRegexp || p.Type == ParamTypeJSON
+}
+
 type Parameter struct {
 	ID         string
 	Name       string

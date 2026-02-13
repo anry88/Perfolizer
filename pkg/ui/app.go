@@ -139,7 +139,18 @@ type PerfolizerApp struct {
 	toggleShortcut fyne.Shortcut // stored so we can remove when re-registering
 
 	ParameterManager *ParameterManager
+
+	debugConsoleMode      string
+	lastDebugExchange     *core.DebugHTTPExchange
+	extractorSelector     *widget.Select
+	extractionResultEntry *widget.Entry
+	debugContentContainer *fyne.Container
 }
+
+const (
+	DebugModeNormal         = "Normal"
+	DebugModeExtractionTest = "Extraction Test"
+)
 
 func NewPerfolizerApp() *PerfolizerApp {
 	a := app.NewWithID("com.github.anry88.perfolizer")
@@ -157,10 +168,11 @@ func NewPerfolizerApp() *PerfolizerApp {
 		Window:  w,
 		Content: container.NewMax(widget.NewLabel("Select a node to edit")),
 
-		agentInitError: cfgErr,
-		pollInterval:   pollInterval,
-		agentClients:   make(map[string]*AgentClient),
-		agentRuntime:   make(map[string]agentRuntimeState),
+		agentInitError:   cfgErr,
+		pollInterval:     pollInterval,
+		agentClients:     make(map[string]*AgentClient),
+		agentRuntime:     make(map[string]agentRuntimeState),
+		debugConsoleMode: DebugModeNormal,
 	}
 	pa.initAgents(cfg.BaseURL(), defaultClient)
 
@@ -304,16 +316,24 @@ func (pa *PerfolizerApp) setupUI() {
 		pa.clearDebugConsole()
 	})
 
+	modeSelect := widget.NewSelect([]string{DebugModeNormal, DebugModeExtractionTest}, func(s string) {
+		pa.debugConsoleMode = s
+		pa.updateDebugConsoleUI()
+	})
+	modeSelect.SetSelected(DebugModeNormal)
+
 	debugToolbar := container.NewBorder(nil, nil,
-		widget.NewLabel("Debug Console"),
+		container.NewHBox(widget.NewLabel("Debug Console"), modeSelect),
 		container.NewHBox(searchButton, clearDebugButton),
 		pa.DebugSearchEntry,
 	)
 
+	pa.debugContentContainer = container.NewMax(pa.DebugConsoleEntry)
+
 	debugPanel := container.NewBorder(
 		debugToolbar,
 		nil, nil, nil,
-		pa.DebugConsoleEntry,
+		pa.debugContentContainer,
 	)
 
 	// 2. Toolbar (Top)
@@ -1364,6 +1384,7 @@ func (pa *PerfolizerApp) removeElement() {
 }
 
 func (pa *PerfolizerApp) appendDebugSamplerCard(index, total int, sampler *elements.HttpSampler, exchange *core.DebugHTTPExchange, agentErr error, ctx *core.Context) {
+	pa.lastDebugExchange = exchange
 	var b strings.Builder
 
 	requestMethod := sampler.Method
@@ -1545,6 +1566,111 @@ func formatHeadersText(headers map[string][]string) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func (pa *PerfolizerApp) updateDebugConsoleUI() {
+	if pa.debugContentContainer == nil {
+		return
+	}
+
+	pa.debugContentContainer.Objects = nil
+	if pa.debugConsoleMode == DebugModeExtractionTest {
+		pa.debugContentContainer.Add(pa.buildExtractionTestUI())
+	} else {
+		pa.debugContentContainer.Add(pa.DebugConsoleEntry)
+	}
+	pa.debugContentContainer.Refresh()
+}
+
+func (pa *PerfolizerApp) getExtractorParameters() []core.Parameter {
+	planIdx := pa.getCurrentPlanIndex()
+	if planIdx < 0 || planIdx >= pa.Project.PlanCount() {
+		return nil
+	}
+
+	var extractors []core.Parameter
+	for _, p := range pa.Project.Plans[planIdx].Parameters {
+		if p.IsExtractor() {
+			extractors = append(extractors, p)
+		}
+	}
+	return extractors
+}
+
+func (pa *PerfolizerApp) buildExtractionTestUI() fyne.CanvasObject {
+	extractors := pa.getExtractorParameters()
+	var extractorNames []string
+	extractorMap := make(map[string]core.Parameter)
+
+	for _, p := range extractors {
+		name := fmt.Sprintf("%s (%s)", p.Name, p.Type)
+		extractorNames = append(extractorNames, name)
+		extractorMap[name] = p
+	}
+
+	if len(extractorNames) == 0 {
+		return container.NewCenter(widget.NewLabel("No extractors defined in current plan"))
+	}
+
+	pa.extractorSelector = widget.NewSelect(extractorNames, nil)
+	pa.extractorSelector.PlaceHolder = "Select Extractor"
+
+	pa.extractionResultEntry = widget.NewMultiLineEntry()
+	pa.extractionResultEntry.TextStyle = fyne.TextStyle{Monospace: true}
+	pa.extractionResultEntry.Disable()
+
+	testBtn := widget.NewButtonWithIcon("Test", theme.MediaPlayIcon(), func() {
+		selectedName := pa.extractorSelector.Selected
+		if selectedName == "" {
+			return
+		}
+		param := extractorMap[selectedName]
+		pa.testExtractor(param)
+	})
+
+	top := container.NewBorder(nil, nil, nil, testBtn, pa.extractorSelector)
+
+	return container.NewBorder(top, nil, nil, nil, pa.extractionResultEntry)
+}
+
+func (pa *PerfolizerApp) testExtractor(param core.Parameter) {
+	if pa.lastDebugExchange == nil || pa.lastDebugExchange.Response == nil {
+		pa.extractionResultEntry.SetText("Error: No debug response captured yet. Run a debug test first.")
+		return
+	}
+
+	body := pa.lastDebugExchange.Response.Body
+	var result string
+
+	if param.Type == core.ParamTypeRegexp {
+		re, err := regexp.Compile(param.Expression)
+		if err != nil {
+			result = fmt.Sprintf("Error compiling Regex: %v", err)
+		} else {
+			matches := re.FindStringSubmatch(body)
+			if len(matches) > 0 {
+				result = fmt.Sprintf("Match found!\nFull match: %q\nGroups: %v", matches[0], matches[1:])
+			} else {
+				result = "No match found."
+			}
+		}
+	} else if param.Type == core.ParamTypeJSON {
+		if param.Expression == "" {
+			result = "Error: Empty JSON Path expression."
+		} else {
+			extractedValue := elements.ExtractJSONPathSimple(body, param.Expression)
+			if extractedValue != "" {
+				result = fmt.Sprintf("Success!\nExtracted value: %q", extractedValue)
+			} else {
+				result = "No value found for JSON path (or invalid JSON)."
+			}
+		}
+	} else {
+		result = "Error: Selected parameter is not an extractor."
+	}
+
+	pa.extractionResultEntry.SetText(fmt.Sprintf("Testing Extractor: %s\nType: %s\nExpression: %q\n\nResult:\n%s",
+		param.Name, param.Type, param.Expression, result))
 }
 
 func truncatePreview(value string, maxLen int) string {
