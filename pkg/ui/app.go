@@ -115,7 +115,7 @@ type PerfolizerApp struct {
 	Tree    *widget.Tree
 	Content *fyne.Container
 
-	DebugConsoleEntry *widget.Entry
+	DebugConsoleEntry *ReadOnlyEntry
 	DebugSearchEntry  *widget.Entry
 
 	Project       *core.Project // Project with multiple test plans
@@ -144,8 +144,32 @@ type PerfolizerApp struct {
 	debugConsoleMode      string
 	lastDebugExchange     *core.DebugHTTPExchange
 	extractorSelector     *widget.Select
-	extractionResultEntry *widget.Entry
+	extractionResultEntry *ReadOnlyEntry
 	debugContentContainer *fyne.Container
+}
+
+// ReadOnlyEntry is a custom entry that allows selection/copy but prevents modification
+type ReadOnlyEntry struct {
+	widget.Entry
+}
+
+func NewReadOnlyEntry() *ReadOnlyEntry {
+	e := &ReadOnlyEntry{}
+	e.MultiLine = true
+	e.ExtendBaseWidget(e)
+	return e
+}
+
+func (e *ReadOnlyEntry) TypedRune(r rune)          {} // Ignore character input
+func (e *ReadOnlyEntry) TypedKey(k *fyne.KeyEvent) {} // Ignore key input (except shortcuts like Ctrl+C)
+func (e *ReadOnlyEntry) TypedShortcut(s fyne.Shortcut) {
+	if _, ok := s.(*fyne.ShortcutCopy); ok {
+		e.Entry.TypedShortcut(s)
+	}
+	if _, ok := s.(*fyne.ShortcutSelectAll); ok {
+		e.Entry.TypedShortcut(s)
+	}
+	// Ignore other shortcuts like Paste, Cut, etc.
 }
 
 const (
@@ -300,7 +324,7 @@ func (pa *PerfolizerApp) setupUI() {
 		}
 	}
 
-	pa.DebugConsoleEntry = widget.NewMultiLineEntry()
+	pa.DebugConsoleEntry = NewReadOnlyEntry()
 	pa.DebugConsoleEntry.TextStyle = fyne.TextStyle{Monospace: true}
 	pa.DebugConsoleEntry.Wrapping = fyne.TextWrapOff // Allow horizontal scroll for long lines
 
@@ -1617,9 +1641,8 @@ func (pa *PerfolizerApp) buildExtractionTestUI() fyne.CanvasObject {
 	pa.extractorSelector = widget.NewSelect(extractorNames, nil)
 	pa.extractorSelector.PlaceHolder = "Select Extractor"
 
-	pa.extractionResultEntry = widget.NewMultiLineEntry()
+	pa.extractionResultEntry = NewReadOnlyEntry()
 	pa.extractionResultEntry.TextStyle = fyne.TextStyle{Monospace: true}
-	pa.extractionResultEntry.Disable()
 
 	testBtn := widget.NewButtonWithIcon("Test", theme.MediaPlayIcon(), func() {
 		selectedName := pa.extractorSelector.Selected
