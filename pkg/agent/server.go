@@ -146,6 +146,20 @@ func (s *Server) setStopped(stats *core.StatsRunner) {
 }
 
 func runPlan(ctx context.Context, plan core.TestElement, runner core.Runner) {
+	// Extract parameters from the plan wrapper if available
+	// The 'plan' here is likely the Root element of a PlanEntry.
+	// However, standard TestElement doesn't have Parameters field in interface.
+	// In the MVP, we might need a hack or interface expansion.
+	// For now, let's assume the UI prepares the thread groups with parameters BEFORE sending to agent,
+	// OR we need to attach them here.
+
+	// Since we updated ThreadGroup struct to have Parameters, we just need to make sure they are populated.
+	// The Agent receives a serialized TestPlan.
+	// If the UI saves/serializes the ThreadGroup WITH parameters, then they are already there!
+	// Let's verify if `persistence` saves them.
+	// Yes, GetProps includes "Parameters", so toDTO/fromDTO will handle them via GetParameters.
+	// So explicit passing here might NOT be needed if they are part of the ThreadGroup's properties.
+
 	var wg sync.WaitGroup
 
 	for _, child := range plan.GetChildren() {

@@ -10,20 +10,24 @@ import (
 
 func init() {
 	core.RegisterFactory("SimpleThreadGroup", func(name string, props map[string]interface{}) core.TestElement {
-		return &SimpleThreadGroup{
+		tg := &SimpleThreadGroup{
 			BaseElement: core.NewBaseElement(name),
 			Users:       core.GetInt(props, "Users", 1),
 			Iterations:  core.GetInt(props, "Iterations", 1),
 		}
+		tg.Parameters = core.GetParameters(props, "Parameters")
+		return tg
 	})
 	core.RegisterFactory("RPSThreadGroup", func(name string, props map[string]interface{}) core.TestElement {
-		return &RPSThreadGroup{
+		tg := &RPSThreadGroup{
 			BaseElement:      core.NewBaseElement(name),
 			Users:            core.GetInt(props, "Users", 10),
 			RPS:              core.GetFloat(props, "RPS", 10.0),
 			ProfileBlocks:    parseRPSProfileBlocks(props),
 			GracefulShutdown: time.Duration(core.GetInt(props, "GracefulShutdownMS", 0)) * time.Millisecond,
 		}
+		tg.Parameters = core.GetParameters(props, "Parameters")
+		return tg
 	})
 }
 
@@ -34,6 +38,7 @@ type SimpleThreadGroup struct {
 	Users      int
 	Iterations int // -1 for infinite
 	RampUp     time.Duration
+	Parameters []core.Parameter // Injected from Plan
 }
 
 func (tg *SimpleThreadGroup) GetType() string {
@@ -44,6 +49,7 @@ func (tg *SimpleThreadGroup) GetProps() map[string]interface{} {
 	return map[string]interface{}{
 		"Users":      tg.Users,
 		"Iterations": tg.Iterations,
+		"Parameters": tg.Parameters,
 	}
 }
 
@@ -58,6 +64,7 @@ func NewSimpleThreadGroup(name string, users, iterations int) *SimpleThreadGroup
 func (tg *SimpleThreadGroup) Clone() core.TestElement {
 	newTG := *tg
 	newTG.BaseElement = core.NewBaseElement(tg.Name())
+	newTG.Parameters = append([]core.Parameter(nil), tg.Parameters...)
 	return &newTG
 }
 
@@ -90,6 +97,11 @@ func (tg *SimpleThreadGroup) Start(ctx context.Context, runner core.Runner) {
 			// Thread Context
 			tCtx := core.NewContext(ctx, threadID)
 			tCtx.SetVar("Reporter", runner)
+			// Inject parameters
+			for _, p := range tg.Parameters {
+				tCtx.SetVar(p.Name, p.Value)
+				tCtx.ParameterDefinitions[p.Name] = p
+			}
 
 			for iter := 0; tg.Iterations == -1 || iter < tg.Iterations; iter++ {
 				// Check for stop
@@ -132,6 +144,7 @@ type RPSThreadGroup struct {
 	RPS              float64 // Base Requests (Transactions) per second for samplers with TargetRPS=0
 	ProfileBlocks    []RPSProfileBlock
 	GracefulShutdown time.Duration
+	Parameters       []core.Parameter
 }
 
 type RPSProfileBlock struct {
@@ -169,6 +182,7 @@ func (tg *RPSThreadGroup) GetProps() map[string]interface{} {
 		"RPS":                tg.RPS,
 		"ProfileBlocks":      blocks,
 		"GracefulShutdownMS": tg.GracefulShutdown.Milliseconds(),
+		"Parameters":         tg.Parameters,
 	}
 }
 
@@ -176,6 +190,7 @@ func (tg *RPSThreadGroup) Clone() core.TestElement {
 	newTG := *tg
 	newTG.BaseElement = core.NewBaseElement(tg.Name())
 	newTG.ProfileBlocks = append([]RPSProfileBlock(nil), tg.ProfileBlocks...)
+	newTG.Parameters = append([]core.Parameter(nil), tg.Parameters...)
 	return &newTG
 }
 
@@ -223,6 +238,11 @@ func (tg *RPSThreadGroup) Start(ctx context.Context, runner core.Runner) {
 			// Thread Context
 			tCtx := core.NewContext(groupCtx, threadID)
 			tCtx.SetVar("Reporter", runner)
+			// Inject parameters
+			for _, p := range tg.Parameters {
+				tCtx.SetVar(p.Name, p.Value)
+				tCtx.ParameterDefinitions[p.Name] = p
+			}
 			// Inject DefaultRPS for children to inherit if they don't have one
 			tCtx.SetVar("DefaultRPS", tg.RPS)
 			// RPS Thread Group uses shared, non-blocking limiter checks so each sampler

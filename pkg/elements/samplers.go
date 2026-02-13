@@ -3,9 +3,11 @@ package elements
 import (
 	"bytes"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"perfolizer/pkg/core"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +22,8 @@ func init() {
 			Url:         core.GetString(props, "Url", "http://localhost"),
 			Method:      core.GetString(props, "Method", "GET"),
 			TargetRPS:   core.GetFloat(props, "TargetRPS", 0),
+			ExtractVars: core.GetStringSlice(props, "ExtractVars"),
+			Body:        core.GetString(props, "Body", ""),
 		}
 	})
 }
@@ -38,16 +42,21 @@ func (h *HttpSampler) GetType() string {
 
 func (h *HttpSampler) GetProps() map[string]interface{} {
 	return map[string]interface{}{
-		"Url":       h.Url,
-		"Method":    h.Method,
-		"TargetRPS": h.TargetRPS,
+		"Url":         h.Url,
+		"Method":      h.Method,
+		"TargetRPS":   h.TargetRPS,
+		"ExtractVars": h.ExtractVars,
+		"Body":        h.Body,
 	}
 }
 
 func (h *HttpSampler) Clone() core.TestElement {
 	newH := *h
 	newH.BaseElement = core.NewBaseElement(h.Name())
-	newH.BaseElement = core.NewBaseElement(h.Name())
+	if h.ExtractVars != nil {
+		newH.ExtractVars = make([]string, len(h.ExtractVars))
+		copy(newH.ExtractVars, h.ExtractVars)
+	}
 	return &newH
 }
 
@@ -92,12 +101,20 @@ func (h *HttpSampler) Execute(ctx *core.Context) error {
 	}
 
 	// 1. Prepare Request
+	// Substitute variables
+	url := ctx.Substitute(h.Url)
+	method := ctx.Substitute(h.Method)
+	body := ctx.Substitute(h.Body)
+
+	// Debug substitution
+	log.Printf("Debug: Sampler %q Request: %s %s", h.Name(), method, url)
+
 	var bodyReader io.Reader
-	if h.Body != "" {
-		bodyReader = bytes.NewBufferString(h.Body)
+	if body != "" {
+		bodyReader = bytes.NewBufferString(body)
 	}
 
-	req, err := http.NewRequest(h.Method, h.Url, bodyReader)
+	req, err := http.NewRequest(method, url, bodyReader)
 	if err != nil {
 		return err // Or report error sample?
 	}
@@ -124,10 +141,81 @@ func (h *HttpSampler) Execute(ctx *core.Context) error {
 		result.ResponseCode = resp.Status // "200 OK"
 		result.Success = resp.StatusCode >= 200 && resp.StatusCode < 400
 
-		// Read body size (limited)
-		// We might want to drain body to reuse connection
-		written, _ := io.Copy(io.Discard, resp.Body)
-		result.BytesReceived = written
+		var respBodyBytes []byte
+		// Read body for variable extraction if needed, otherwise discard
+		if len(h.ExtractVars) > 0 {
+			respBodyBytes, _ = io.ReadAll(resp.Body)
+			result.BytesReceived = int64(len(respBodyBytes))
+		} else {
+			written, _ := io.Copy(io.Discard, resp.Body)
+			result.BytesReceived = written
+		}
+
+		// Parameter Extraction
+		if len(h.ExtractVars) > 0 {
+			respBody := string(respBodyBytes)
+
+			for _, varName := range h.ExtractVars {
+				// Find parameter definition
+				if param, ok := ctx.GetParameterDefinition(varName); ok {
+					// Debug: Log extraction attempt
+					log.Printf("Debug: Sampler %q extracting param %q (Type=%s)", h.Name(), varName, param.Type)
+
+					if param.Type == core.ParamTypeRegexp {
+						if param.Expression == "" {
+							// Config Error or User mistake: Expression empty.
+							log.Printf("Debug: Param %q has empty expression, using Value as default", varName)
+							if param.Value != "" {
+								ctx.SetVar(varName, param.Value)
+							}
+							continue
+						}
+
+						re, err := regexp.Compile(param.Expression)
+						if err == nil {
+							matches := re.FindStringSubmatch(respBody)
+							if len(matches) > 1 {
+								log.Printf("Debug: Extracted %s=%q", varName, matches[1])
+								ctx.SetVar(varName, matches[1])
+							} else if len(matches) == 1 {
+								log.Printf("Debug: Extracted %s=%q", varName, matches[0])
+								ctx.SetVar(varName, matches[0])
+							} else {
+								// No match, use default/fallback
+								log.Printf("Debug: No match for %s, using default=%q", varName, param.Value)
+								if param.Value != "" {
+									ctx.SetVar(varName, param.Value)
+								}
+							}
+						} else {
+							log.Printf("Error: Invalid regex for %s: %v", varName, err)
+						}
+					} else if param.Type == core.ParamTypeJSON {
+						if param.Expression == "" {
+							log.Printf("Debug: Param %q has empty JSON path, using Value as default", varName)
+							if param.Value != "" {
+								ctx.SetVar(varName, param.Value)
+							}
+							continue
+						}
+
+						// Simple JSON path extraction using encoding/json
+						extractedValue := ExtractJSONPathSimple(respBody, param.Expression)
+						if extractedValue != "" {
+							log.Printf("Debug: Extracted %s=%q from JSON path %q", varName, extractedValue, param.Expression)
+							ctx.SetVar(varName, extractedValue)
+						} else {
+							log.Printf("Debug: No value found for JSON path %q, using default=%q", param.Expression, param.Value)
+							if param.Value != "" {
+								ctx.SetVar(varName, param.Value)
+							}
+						}
+					}
+				} else {
+					log.Printf("Warning: Parameter definition for %q not found", varName)
+				}
+			}
+		}
 	}
 
 	// Used mechanism to report up?
@@ -218,8 +306,9 @@ func getProfileScale(ctx *core.Context) float64 {
 // HttpSampler executes an HTTP request
 type HttpSampler struct {
 	core.BaseElement
-	Url       string
-	Method    string
-	Body      string
-	TargetRPS float64 // 0 means unlimited/thread group default
+	Url         string
+	Method      string
+	Body        string
+	TargetRPS   float64  // 0 means unlimited/thread group default
+	ExtractVars []string // Parameters to extract from response
 }

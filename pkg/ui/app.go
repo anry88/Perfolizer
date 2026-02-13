@@ -3,10 +3,10 @@ package ui
 import (
 	"context"
 	"fmt"
-	"image/color"
 	"path/filepath"
 	"perfolizer/pkg/core"
 	"perfolizer/pkg/elements"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -114,8 +114,8 @@ type PerfolizerApp struct {
 	Tree    *widget.Tree
 	Content *fyne.Container
 
-	DebugConsoleList   *fyne.Container
-	DebugConsoleScroll *container.Scroll
+	DebugConsoleEntry *widget.Entry
+	DebugSearchEntry  *widget.Entry
 
 	Project       *core.Project // Project with multiple test plans
 	CurrentNodeID string        // Tree node ID: "plan:i" or "plan:i:elementId"
@@ -137,6 +137,8 @@ type PerfolizerApp struct {
 	settingsWindow fyne.Window
 
 	toggleShortcut fyne.Shortcut // stored so we can remove when re-registering
+
+	ParameterManager *ParameterManager
 }
 
 func NewPerfolizerApp() *PerfolizerApp {
@@ -277,21 +279,41 @@ func (pa *PerfolizerApp) setupUI() {
 			} else {
 				pa.showProperties(el)
 			}
+			// Refresh parameters when selection changes (potentially across plans)
+			if pa.ParameterManager != nil {
+				pa.ParameterManager.Refresh()
+			}
 		}
 	}
 
-	debugConsoleList := container.NewVBox()
-	debugConsoleScroll := container.NewVScroll(debugConsoleList)
-	pa.DebugConsoleList = debugConsoleList
-	pa.DebugConsoleScroll = debugConsoleScroll
+	pa.DebugConsoleEntry = widget.NewMultiLineEntry()
+	pa.DebugConsoleEntry.TextStyle = fyne.TextStyle{Monospace: true}
+	pa.DebugConsoleEntry.Wrapping = fyne.TextWrapOff // Allow horizontal scroll for long lines
+
+	pa.DebugSearchEntry = widget.NewEntry()
+	pa.DebugSearchEntry.SetPlaceHolder("Search...")
+	pa.DebugSearchEntry.OnSubmitted = func(s string) {
+		pa.searchDebugConsole(s)
+	}
+
+	searchButton := widget.NewButtonWithIcon("", theme.SearchIcon(), func() {
+		pa.searchDebugConsole(pa.DebugSearchEntry.Text)
+	})
 
 	clearDebugButton := widget.NewButtonWithIcon("Clear", theme.ContentClearIcon(), func() {
 		pa.clearDebugConsole()
 	})
+
+	debugToolbar := container.NewBorder(nil, nil,
+		widget.NewLabel("Debug Console"),
+		container.NewHBox(searchButton, clearDebugButton),
+		pa.DebugSearchEntry,
+	)
+
 	debugPanel := container.NewBorder(
-		container.NewBorder(nil, nil, widget.NewLabel("Debug Console"), clearDebugButton, nil),
+		debugToolbar,
 		nil, nil, nil,
-		container.NewPadded(debugConsoleScroll),
+		pa.DebugConsoleEntry,
 	)
 
 	// 2. Toolbar (Top)
@@ -316,8 +338,17 @@ func (pa *PerfolizerApp) setupUI() {
 
 	// Wrap tree so right-click opens context menu (no ⋮ button)
 	treeWithCtxMenu := newTreeWithContextMenu(pa.Tree, pa)
-	split := container.NewHSplit(
+
+	pa.ParameterManager = NewParameterManager(pa)
+
+	leftSplit := container.NewVSplit(
 		container.NewBorder(nil, nil, nil, nil, treeWithCtxMenu),
+		pa.ParameterManager.Container,
+	)
+	leftSplit.SetOffset(0.7)
+
+	split := container.NewHSplit(
+		leftSplit,
 		rightSplit,
 	)
 	split.SetOffset(0.3)
@@ -582,10 +613,74 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 		bodyEntry.SetText(v.Body)
 		bodyEntry.OnChanged = func(s string) { v.Body = s }
 
+		// Variable Extraction UI
+		extractContainer := container.NewVBox()
+
+		var refreshExtractList func()
+		refreshExtractList = func() {
+			extractContainer.Objects = nil
+
+			// Header
+			extractContainer.Add(container.NewGridWithColumns(2,
+				widget.NewLabel("Parameter Name"),
+				widget.NewLabel("Action"),
+			))
+
+			// List existing
+			for i, varName := range v.ExtractVars {
+				idx := i // Capture loop variable
+				vn := varName
+
+				nameLabel := widget.NewLabel(vn)
+				delBtn := widget.NewButtonWithIcon("", theme.ContentRemoveIcon(), func() {
+					// Remove at index
+					v.ExtractVars = append(v.ExtractVars[:idx], v.ExtractVars[idx+1:]...)
+					refreshExtractList()
+				})
+
+				extractContainer.Add(container.NewGridWithColumns(2, nameLabel, delBtn))
+			}
+
+			// Add New - Get available parameters from plan
+			planIdx := pa.getCurrentPlanIndex()
+			var availableParams []string
+			if planIdx >= 0 && pa.Project != nil && planIdx < pa.Project.PlanCount() {
+				params := pa.Project.Plans[planIdx].Parameters
+				for _, p := range params {
+					availableParams = append(availableParams, p.Name)
+				}
+			}
+
+			if len(availableParams) > 0 {
+				paramSelect := widget.NewSelect(availableParams, nil)
+				paramSelect.PlaceHolder = "Select parameter..."
+				addBtn := widget.NewButtonWithIcon("Add", theme.ContentAddIcon(), func() {
+					if paramSelect.Selected != "" {
+						// Check if already in list
+						for _, existing := range v.ExtractVars {
+							if existing == paramSelect.Selected {
+								return // Already added
+							}
+						}
+						v.ExtractVars = append(v.ExtractVars, paramSelect.Selected)
+						refreshExtractList()
+						paramSelect.ClearSelected()
+					}
+				})
+				extractContainer.Add(container.NewGridWithColumns(2, paramSelect, addBtn))
+			} else {
+				noParamsLabel := widget.NewLabel("No parameters defined in plan")
+				extractContainer.Add(noParamsLabel)
+			}
+		}
+
+		refreshExtractList()
+
 		form.Append("URL", urlEntry)
 		form.Append("Method", methodEntry)
 		form.Append("Body", bodyEntry)
 		form.Append("Target RPS (0 = default)", rpsEntry)
+		form.Append("Extract Parameters", extractContainer)
 
 	case *elements.SimpleThreadGroup:
 		usersEntry := widget.NewEntry()
@@ -776,6 +871,9 @@ func (pa *PerfolizerApp) loadTestPlan() {
 		pa.Content.Objects = nil
 		pa.Content.Refresh()
 		pa.Tree.Refresh()
+		if pa.ParameterManager != nil {
+			pa.ParameterManager.Refresh()
+		}
 	}, pa.Window)
 }
 
@@ -798,6 +896,19 @@ func (pa *PerfolizerApp) runTest() {
 		dialog.ShowError(fmt.Errorf("no test plan selected"), pa.Window)
 		return
 	}
+	// Inject parameters into ThreadGroups (runtime binding)
+	if planIdx := pa.getCurrentPlanIndex(); planIdx >= 0 && planIdx < pa.Project.PlanCount() {
+		params := pa.Project.Plans[planIdx].Parameters
+		// Helper to inject into children (non-recursive for now as ThreadGroups are usually top-level)
+		for _, child := range plan.GetChildren() {
+			if tg, ok := child.(*elements.SimpleThreadGroup); ok {
+				tg.Parameters = params
+			} else if tg, ok := child.(*elements.RPSThreadGroup); ok {
+				tg.Parameters = params
+			}
+		}
+	}
+
 	if err := client.RunTest(plan); err != nil {
 		pa.markAgentUnavailable(agentID, err)
 		dialog.ShowError(err, pa.Window)
@@ -854,13 +965,65 @@ func (pa *PerfolizerApp) runDebugTest() {
 }
 
 func (pa *PerfolizerApp) executeDebugRun(client *AgentClient, samplers []*elements.HttpSampler) {
+	// Create a context to hold variables across requests
+	ctx := core.NewContext(context.Background(), 0)
+
+	// Inject parameter definitions from the plan
+	planIdx := pa.getCurrentPlanIndex()
+	if planIdx >= 0 && pa.Project != nil && planIdx < pa.Project.PlanCount() {
+		params := pa.Project.Plans[planIdx].Parameters
+		for _, p := range params {
+			ctx.ParameterDefinitions[p.Name] = p
+			// Initialize with default/static values
+			if p.Type == core.ParamTypeStatic {
+				ctx.SetVar(p.Name, p.Value)
+			} else if p.Type == core.ParamTypeRegexp && p.Value != "" {
+				// Set default value for regex params
+				ctx.SetVar(p.Name, p.Value)
+			}
+		}
+	}
+
 	for i, sampler := range samplers {
+		// Substitute variables in request
+		url := ctx.Substitute(sampler.Url)
+		method := ctx.Substitute(sampler.Method)
+		body := ctx.Substitute(sampler.Body)
+
 		exchange, err := client.DebugHTTP(core.DebugHTTPRequest{
-			Method: sampler.Method,
-			URL:    sampler.Url,
-			Body:   sampler.Body,
+			Method: method,
+			URL:    url,
+			Body:   body,
 		})
-		pa.appendDebugSamplerCard(i+1, len(samplers), sampler, &exchange, err)
+
+		// Extract variables from response
+		if err == nil && exchange.Response != nil && len(sampler.ExtractVars) > 0 {
+			respBody := exchange.Response.Body
+			for _, varName := range sampler.ExtractVars {
+				if param, ok := ctx.GetParameterDefinition(varName); ok {
+					if param.Type == core.ParamTypeRegexp && param.Expression != "" {
+						re, compileErr := regexp.Compile(param.Expression)
+						if compileErr == nil {
+							matches := re.FindStringSubmatch(respBody)
+							if len(matches) > 1 {
+								ctx.SetVar(varName, matches[1])
+							} else if len(matches) == 1 {
+								ctx.SetVar(varName, matches[0])
+							}
+							// If no match, keep existing value (default)
+						}
+					} else if param.Type == core.ParamTypeJSON && param.Expression != "" {
+						extractedValue := elements.ExtractJSONPathSimple(respBody, param.Expression)
+						if extractedValue != "" {
+							ctx.SetVar(varName, extractedValue)
+						}
+						// If no match, keep existing value (default)
+					}
+				}
+			}
+		}
+
+		pa.appendDebugSamplerCard(i+1, len(samplers), sampler, &exchange, err, ctx)
 	}
 
 	pa.appendDebugInfo(fmt.Sprintf("Debug run finished at %s", time.Now().Format(time.RFC3339)))
@@ -883,38 +1046,59 @@ func (pa *PerfolizerApp) collectHTTPSamplers(root core.TestElement, out *[]*elem
 }
 
 func (pa *PerfolizerApp) clearDebugConsole() {
-	if pa.DebugConsoleList == nil {
+	if pa.DebugConsoleEntry == nil {
 		return
 	}
-	fyne.Do(func() {
-		pa.DebugConsoleList.Objects = nil
-		pa.DebugConsoleList.Refresh()
-	})
+	pa.DebugConsoleEntry.SetText("")
 }
 
 func (pa *PerfolizerApp) appendDebugInfo(line string) {
-	info := widget.NewRichText(
-		&widget.TextSegment{
-			Text: line,
-			Style: widget.RichTextStyle{
-				ColorName: theme.ColorNameForeground,
-			},
-		},
-	)
-	pa.appendDebugItem(info)
-}
-
-func (pa *PerfolizerApp) appendDebugItem(item fyne.CanvasObject) {
-	if pa.DebugConsoleList == nil {
+	if pa.DebugConsoleEntry == nil {
 		return
 	}
+	// UI updates must be on the main thread
 	fyne.Do(func() {
-		pa.DebugConsoleList.Add(item)
-		if len(pa.DebugConsoleList.Objects) > maxDebugItems {
-			pa.DebugConsoleList.Objects = pa.DebugConsoleList.Objects[len(pa.DebugConsoleList.Objects)-maxDebugItems:]
+		text := pa.DebugConsoleEntry.Text
+		if text != "" {
+			text += "\n"
 		}
-		pa.DebugConsoleList.Refresh()
+		text += line
+		pa.DebugConsoleEntry.SetText(text)
+		// Auto-scroll to bottom effectively
+		pa.DebugConsoleEntry.CursorRow = len(strings.Split(text, "\n")) - 1
+		pa.DebugConsoleEntry.Refresh()
 	})
+}
+
+func (pa *PerfolizerApp) searchDebugConsole(query string) {
+	if pa.DebugConsoleEntry == nil || query == "" {
+		return
+	}
+	text := pa.DebugConsoleEntry.Text
+
+	// Simple search: Find first occurrence (for now)
+	idx := strings.Index(text, query)
+	if idx >= 0 {
+		// Calculate row by counting newlines up to idx
+		preceedingText := text[:idx]
+		row := strings.Count(preceedingText, "\n")
+
+		pa.DebugConsoleEntry.CursorRow = row
+		// Column is distance from last newline
+		lastNewlineIdx := strings.LastIndex(preceedingText, "\n")
+		if lastNewlineIdx == -1 {
+			pa.DebugConsoleEntry.CursorColumn = idx
+		} else {
+			pa.DebugConsoleEntry.CursorColumn = idx - lastNewlineIdx - 1
+		}
+
+		pa.DebugConsoleEntry.Refresh()
+		pa.Window.Canvas().Focus(pa.DebugConsoleEntry)
+	}
+}
+
+func (pa *PerfolizerApp) appendDebugItem(text string) {
+	// Deprecated/Refactored into appendDebugInfo logic inside
 }
 
 func (pa *PerfolizerApp) stopTest() {
@@ -1179,7 +1363,9 @@ func (pa *PerfolizerApp) removeElement() {
 	}
 }
 
-func (pa *PerfolizerApp) appendDebugSamplerCard(index, total int, sampler *elements.HttpSampler, exchange *core.DebugHTTPExchange, agentErr error) {
+func (pa *PerfolizerApp) appendDebugSamplerCard(index, total int, sampler *elements.HttpSampler, exchange *core.DebugHTTPExchange, agentErr error, ctx *core.Context) {
+	var b strings.Builder
+
 	requestMethod := sampler.Method
 	requestURL := sampler.Url
 	requestBody := sampler.Body
@@ -1188,9 +1374,7 @@ func (pa *PerfolizerApp) appendDebugSamplerCard(index, total int, sampler *eleme
 	incomingHeaders := "<empty>"
 	responseBody := "<empty>"
 	statusText := "FAILED"
-	statusColor := theme.ColorNameError
 	errorText := ""
-	success := false
 
 	if exchange != nil {
 		if exchange.Request.Method != "" {
@@ -1213,7 +1397,7 @@ func (pa *PerfolizerApp) appendDebugSamplerCard(index, total int, sampler *eleme
 			errorText = exchange.Error
 		}
 		if exchange.Response != nil {
-			statusText = fmt.Sprintf("%d (%s)", exchange.Response.StatusCode, exchange.Response.Status)
+			statusText = fmt.Sprintf("%d %s", exchange.Response.StatusCode, exchange.Response.Status)
 			incomingHeaders = formatHeadersText(exchange.Response.Headers)
 			if exchange.Response.Body != "" {
 				responseBody = exchange.Response.Body
@@ -1221,7 +1405,6 @@ func (pa *PerfolizerApp) appendDebugSamplerCard(index, total int, sampler *eleme
 			if exchange.ResponseBodyTruncated {
 				responseBody = truncatePreview(responseBody, maxBodyPreviewChars)
 			}
-			success = exchange.Response.StatusCode >= 200 && exchange.Response.StatusCode < 400
 		}
 	}
 
@@ -1236,68 +1419,107 @@ func (pa *PerfolizerApp) appendDebugSamplerCard(index, total int, sampler *eleme
 	if agentErr != nil {
 		errorText = agentErr.Error()
 	}
-	if success {
-		statusColor = theme.ColorNameSuccess
-	}
 
-	segments := make([]widget.RichTextSegment, 0, 28)
-
-	appendSegment := func(text string, colorName fyne.ThemeColorName, textStyle fyne.TextStyle) {
-		segments = append(segments, &widget.TextSegment{
-			Text: text,
-			Style: widget.RichTextStyle{
-				ColorName: colorName,
-				TextStyle: textStyle,
-			},
-		})
-	}
-	appendField := func(name, value string) {
-		appendSegment(name+": ", theme.ColorNamePrimary, fyne.TextStyle{Bold: true})
-		appendSegment(value+"\n", theme.ColorNameForeground, fyne.TextStyle{Monospace: true})
-	}
-	appendBlockField := func(name, value string) {
-		appendSegment(name+":\n", theme.ColorNamePrimary, fyne.TextStyle{Bold: true})
-		appendSegment(value+"\n\n", theme.ColorNameForeground, fyne.TextStyle{Monospace: true})
-	}
-
-	appendSegment(fmt.Sprintf("[%d/%d] Sampler: %s\n", index, total, sampler.Name()), theme.ColorNamePrimary, fyne.TextStyle{Bold: true})
-	appendField("Request", fmt.Sprintf("%s %s", requestMethod, requestURL))
-	appendField("Duration", duration)
-	appendBlockField("Outgoing headers", outgoingHeaders)
-	appendBlockField("Request body", requestBody)
-	appendSegment("Status: ", theme.ColorNamePrimary, fyne.TextStyle{Bold: true})
-	appendSegment(statusText+"\n", statusColor, fyne.TextStyle{Bold: true, Monospace: true})
-	appendBlockField("Incoming headers", incomingHeaders)
-	appendBlockField("Response body", responseBody)
-
+	div := strings.Repeat("-", 40)
+	fmt.Fprintf(&b, "\n%s\n[%d/%d] Sampler: %s\n", div, index, total, sampler.Name())
+	fmt.Fprintf(&b, "Request: %s %s\n", requestMethod, requestURL)
+	fmt.Fprintf(&b, "Duration: %s\n", duration)
+	fmt.Fprintf(&b, "Status: %s\n", statusText)
 	if errorText != "" {
-		appendSegment("Error: ", theme.ColorNamePrimary, fyne.TextStyle{Bold: true})
-		appendSegment(errorText+"\n", theme.ColorNameError, fyne.TextStyle{Monospace: true})
+		fmt.Fprintf(&b, "ERROR: %s\n", errorText)
 	}
 
-	logText := widget.NewRichText(segments...)
-	logText.Wrapping = fyne.TextWrapWord
+	// Display Parameter Extraction Results
+	var extractionLog strings.Builder
+	if len(sampler.ExtractVars) > 0 {
+		fmt.Fprintf(&extractionLog, "\n--- Parameter Extraction ---\n")
+		planIdx := pa.getCurrentPlanIndex()
+		var params []core.Parameter
+		if planIdx >= 0 && pa.Project != nil && planIdx < pa.Project.PlanCount() {
+			params = pa.Project.Plans[planIdx].Parameters
+		}
 
-	borderColor := theme.Color(theme.ColorNameSeparator)
-	if !success || errorText != "" {
-		borderColor = theme.Color(theme.ColorNameError)
+		for _, varName := range sampler.ExtractVars {
+			// Find param def
+			found := false
+			for _, p := range params {
+				if p.Name == varName {
+					found = true
+					switch p.Type {
+					case core.ParamTypeRegexp:
+						if p.Expression == "" {
+							fmt.Fprintf(&extractionLog, "Variable: %s\n  Type: Regexp\n  Error: Empty Expression (using fallback: %q)\n", varName, p.Value)
+						} else {
+							re, err := regexp.Compile(p.Expression)
+							if err != nil {
+								fmt.Fprintf(&extractionLog, "Variable: %s\n  Type: Regexp\n  Error: Invalid Regex %q\n", varName, p.Expression)
+							} else {
+								var bodyToSearch string
+								if exchange != nil && exchange.Response != nil {
+									bodyToSearch = exchange.Response.Body
+								}
+								matches := re.FindStringSubmatch(bodyToSearch)
+								if len(matches) > 1 {
+									fmt.Fprintf(&extractionLog, "Variable: %s\n  Type: Regexp\n  Expression: %s\n  Result: %q\n", varName, p.Expression, matches[1])
+								} else if len(matches) == 1 {
+									fmt.Fprintf(&extractionLog, "Variable: %s\n  Type: Regexp\n  Expression: %s\n  Result: %q (Full Match)\n", varName, p.Expression, matches[0])
+								} else {
+									fmt.Fprintf(&extractionLog, "Variable: %s\n  Type: Regexp\n  Expression: %s\n  Result: <NO MATCH> (using default: %q)\n", varName, p.Expression, p.Value)
+								}
+							}
+						}
+					case core.ParamTypeJSON:
+						if p.Expression == "" {
+							fmt.Fprintf(&extractionLog, "Variable: %s\n  Type: JSON\n  Error: Empty JSON Path (using fallback: %q)\n", varName, p.Value)
+						} else {
+							var bodyToSearch string
+							if exchange != nil && exchange.Response != nil {
+								bodyToSearch = exchange.Response.Body
+							}
+							extractedValue := elements.ExtractJSONPathSimple(bodyToSearch, p.Expression)
+							if extractedValue != "" {
+								fmt.Fprintf(&extractionLog, "Variable: %s\n  Type: JSON\n  Path: %s\n  Result: %q\n", varName, p.Expression, extractedValue)
+							} else {
+								fmt.Fprintf(&extractionLog, "Variable: %s\n  Type: JSON\n  Path: %s\n  Result: <NO VALUE> (using default: %q)\n", varName, p.Expression, p.Value)
+							}
+						}
+					default:
+						fmt.Fprintf(&extractionLog, "Variable: %s\n  Type: Static\n  Value: %q\n", varName, p.Value)
+					}
+					break
+				}
+			}
+			if !found {
+				fmt.Fprintf(&extractionLog, "Variable: %s\n  Error: Parameter definition not found in plan.\n", varName)
+			}
+		}
 	}
 
-	background := canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground))
-	background.CornerRadius = 6
+	// Display current variable state from context
+	if ctx != nil && len(ctx.Variables) > 0 {
+		fmt.Fprintf(&extractionLog, "\n--- Context Variables ---\n")
+		// Sort for consistent display
+		varNames := make([]string, 0, len(ctx.Variables))
+		for k := range ctx.Variables {
+			varNames = append(varNames, k)
+		}
+		sort.Strings(varNames)
+		for _, name := range varNames {
+			val := ctx.Variables[name]
+			fmt.Fprintf(&extractionLog, "%s = %q\n", name, val)
+		}
+	}
 
-	border := canvas.NewRectangle(color.Transparent)
-	border.StrokeColor = borderColor
-	border.StrokeWidth = 2
-	border.CornerRadius = 6
+	fmt.Fprintf(&b, "\n--- Outgoing Headers ---\n%s\n", outgoingHeaders)
+	fmt.Fprintf(&b, "\n--- Request Body ---\n%s\n", requestBody)
+	fmt.Fprintf(&b, "\n--- Incoming Headers ---\n%s\n", incomingHeaders)
+	fmt.Fprintf(&b, "\n--- Response Body ---\n%s\n", responseBody)
+	if extractionLog.Len() > 0 {
+		fmt.Fprintf(&b, "%s", extractionLog.String())
+	}
+	fmt.Fprintf(&b, "%s\n", div)
 
-	card := container.NewStack(
-		background,
-		border,
-		container.NewPadded(logText),
-	)
-
-	pa.appendDebugItem(container.NewPadded(card))
+	pa.appendDebugInfo(b.String())
 }
 
 func formatHeadersText(headers map[string][]string) string {

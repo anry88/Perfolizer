@@ -21,14 +21,16 @@ type TestElementDTO struct {
 
 // ProjectDTO is the JSON shape for a saved project (one file, multiple plans).
 type ProjectDTO struct {
-	Name  string        `json:"name"`
+	Name  string         `json:"name"`
 	Plans []PlanEntryDTO `json:"plans"`
 }
 
 // PlanEntryDTO is one test plan inside a project file.
+// PlanEntryDTO is one test plan inside a project file.
 type PlanEntryDTO struct {
-	Name string         `json:"name"`
-	Plan TestElementDTO `json:"plan"`
+	Name       string         `json:"name"`
+	Plan       TestElementDTO `json:"plan"`
+	Parameters []Parameter    `json:"parameters,omitempty"`
 }
 
 func SaveProject(path string, proj *Project) error {
@@ -52,7 +54,11 @@ func LoadProject(path string) (*Project, error) {
 func WriteProject(w io.Writer, proj *Project, pretty bool) error {
 	dto := ProjectDTO{Name: proj.Name, Plans: make([]PlanEntryDTO, 0, len(proj.Plans))}
 	for _, pe := range proj.Plans {
-		dto.Plans = append(dto.Plans, PlanEntryDTO{Name: pe.Name, Plan: toDTO(pe.Root)})
+		dto.Plans = append(dto.Plans, PlanEntryDTO{
+			Name:       pe.Name,
+			Plan:       toDTO(pe.Root),
+			Parameters: pe.Parameters,
+		})
 	}
 	encoder := json.NewEncoder(w)
 	if pretty {
@@ -72,7 +78,12 @@ func ReadProject(r io.Reader) (*Project, error) {
 		if err != nil {
 			return nil, err
 		}
-		proj.Plans = append(proj.Plans, PlanEntry{Name: pe.Name, Root: root})
+		// Ensure non-nil parameters
+		params := pe.Parameters
+		if params == nil {
+			params = make([]Parameter, 0)
+		}
+		proj.Plans = append(proj.Plans, PlanEntry{Name: pe.Name, Root: root, Parameters: params})
 	}
 	return proj, nil
 }
@@ -235,6 +246,71 @@ func GetFloat(props map[string]interface{}, key string, def float64) float64 {
 		if f, ok := v.(float64); ok {
 			return f
 		}
+		// JSON numbers might be int
+		if i, ok := v.(int); ok {
+			return float64(i)
+		}
 	}
 	return def
+}
+
+func GetStringMap(props map[string]interface{}, key string) map[string]string {
+	if v, ok := props[key]; ok {
+		if m, ok := v.(map[string]interface{}); ok {
+			result := make(map[string]string)
+			for k, val := range m {
+				if str, ok := val.(string); ok {
+					result[k] = str
+				}
+			}
+			return result
+		}
+		if m, ok := v.(map[string]string); ok {
+			return m
+		}
+	}
+	return nil
+}
+
+func GetStringSlice(props map[string]interface{}, key string) []string {
+	if v, ok := props[key]; ok {
+		if arr, ok := v.([]interface{}); ok {
+			result := make([]string, 0, len(arr))
+			for _, item := range arr {
+				if str, ok := item.(string); ok {
+					result = append(result, str)
+				}
+			}
+			return result
+		}
+		if arr, ok := v.([]string); ok {
+			return arr
+		}
+	}
+	return nil
+}
+
+func GetParameters(props map[string]interface{}, key string) []Parameter {
+	if v, ok := props[key]; ok {
+		if arr, ok := v.([]interface{}); ok {
+			params := make([]Parameter, 0, len(arr))
+			for _, item := range arr {
+				if m, ok := item.(map[string]interface{}); ok {
+					params = append(params, Parameter{
+						ID:         GetString(m, "ID", ""),
+						Name:       GetString(m, "Name", ""),
+						Value:      GetString(m, "Value", ""),
+						Type:       GetString(m, "Type", "Static"),
+						Expression: GetString(m, "Expression", ""),
+					})
+				}
+			}
+			return params
+		}
+		// If already []Parameter (e.g. from internal clone/copy)
+		if arr, ok := v.([]Parameter); ok {
+			return arr
+		}
+	}
+	return nil
 }

@@ -16,6 +16,29 @@
             "enabled": true,
             "props": {
               "GracefulShutdownMS": 0,
+              "Parameters": [
+                {
+                  "ID": "id_20260212184332.614516_15",
+                  "Name": "test",
+                  "Type": "Regexp",
+                  "Value": "123",
+                  "Expression": "\u003c.*?\u003e"
+                },
+                {
+                  "ID": "id_20260213004747.285220_15",
+                  "Name": "test2",
+                  "Type": "JSON",
+                  "Value": "1",
+                  "Expression": "."
+                },
+                {
+                  "ID": "id_20260213014551.575846_16",
+                  "Name": "test3",
+                  "Type": "Static",
+                  "Value": "3",
+                  "Expression": ""
+                }
+              ],
               "ProfileBlocks": [
                 {
                   "ProfilePercent": 100,
@@ -38,6 +61,10 @@
                 "name": "Google",
                 "enabled": true,
                 "props": {
+                  "Body": "",
+                  "ExtractVars": [
+                    "test"
+                  ],
                   "Method": "GET",
                   "TargetRPS": 2,
                   "Url": "https://www.google.com"
@@ -49,6 +76,8 @@
                 "name": "Facebook",
                 "enabled": true,
                 "props": {
+                  "Body": "${test}",
+                  "ExtractVars": [],
                   "Method": "GET",
                   "TargetRPS": 5,
                   "Url": "https://www.facebook.com"
@@ -58,8 +87,10 @@
                 "type": "HttpSampler",
                 "id": "id_20260207155203.143198_10",
                 "name": "Yandex",
-                "enabled": true,
+                "enabled": false,
                 "props": {
+                  "Body": "",
+                  "ExtractVars": null,
                   "Method": "GET",
                   "TargetRPS": 3,
                   "Url": "https://www.yandex.com"
@@ -74,6 +105,29 @@
             "enabled": false,
             "props": {
               "Iterations": 10,
+              "Parameters": [
+                {
+                  "ID": "id_20260212184332.614516_15",
+                  "Name": "test",
+                  "Type": "Regexp",
+                  "Value": "123",
+                  "Expression": "\u003c.*?\u003e"
+                },
+                {
+                  "ID": "id_20260213004747.285220_15",
+                  "Name": "test2",
+                  "Type": "JSON",
+                  "Value": "1",
+                  "Expression": "."
+                },
+                {
+                  "ID": "id_20260213014551.575846_16",
+                  "Name": "test3",
+                  "Type": "Static",
+                  "Value": "3",
+                  "Expression": ""
+                }
+              ],
               "Users": 1
             },
             "children": [
@@ -83,6 +137,8 @@
                 "name": "Localhost",
                 "enabled": false,
                 "props": {
+                  "Body": "",
+                  "ExtractVars": null,
                   "Method": "GET",
                   "TargetRPS": 0,
                   "Url": "http://localhost:8080"
@@ -103,6 +159,8 @@
                 "name": "HTTP Request",
                 "enabled": true,
                 "props": {
+                  "Body": "",
+                  "ExtractVars": null,
                   "Method": "GET",
                   "TargetRPS": 0,
                   "Url": "https://www.facebook.com"
@@ -111,7 +169,30 @@
             ]
           }
         ]
-      }
+      },
+      "parameters": [
+        {
+          "ID": "id_20260212184332.614516_15",
+          "Name": "test",
+          "Type": "Regexp",
+          "Value": "123",
+          "Expression": "\u003c.*?\u003e"
+        },
+        {
+          "ID": "id_20260213004747.285220_15",
+          "Name": "test2",
+          "Type": "JSON",
+          "Value": "1",
+          "Expression": "."
+        },
+        {
+          "ID": "id_20260213014551.575846_16",
+          "Name": "test3",
+          "Type": "Static",
+          "Value": "3",
+          "Expression": ""
+        }
+      ]
     },
     {
       "name": "Stability",
@@ -128,7 +209,14 @@
             "enabled": true,
             "props": {
               "GracefulShutdownMS": 0,
-              "ProfileBlocks": [],
+              "Parameters": null,
+              "ProfileBlocks": [
+                {
+                  "ProfilePercent": 100,
+                  "RampUpMS": 0,
+                  "StepDurationMS": 60000
+                }
+              ],
               "RPS": 10,
               "Users": 10
             },
@@ -139,64 +227,14 @@
                 "name": "Yandex",
                 "enabled": true,
                 "props": {
+                  "Body": "",
+                  "ExtractVars": null,
                   "Method": "GET",
                   "TargetRPS": 3,
                   "Url": "https://www.yandex.com"
                 }
               }
             ]
-          }
-        ]
-      }
-    },
-    {
-      "name": "Parametrization",
-      "plan": {
-        "type": "TestPlan",
-        "id": "id_20260209191418.577375_15",
-        "name": "Test Plan",
-        "enabled": true,
-        "children": [
-          {
-            "type": "SimpleThreadGroup",
-            "id": "id_20260209191418.577392_16",
-            "name": "Assertions",
-            "enabled": true,
-            "props": {
-              "Iterations": 1,
-              "Users": 1
-            },
-            "children": [
-              {
-                "type": "PauseController",
-                "id": "id_20260209191822.127845_18",
-                "name": "Pause",
-                "enabled": true,
-                "props": {
-                  "DurationMS": 0
-                }
-              },
-              {
-                "type": "PauseController",
-                "id": "id_20260209191826.212091_19",
-                "name": "Pause",
-                "enabled": true,
-                "props": {
-                  "DurationMS": 0
-                }
-              }
-            ]
-          },
-          {
-            "type": "HttpSampler",
-            "id": "id_20260209191658.993825_17",
-            "name": "Extractors",
-            "enabled": true,
-            "props": {
-              "Method": "GET",
-              "TargetRPS": 0,
-              "Url": "http://localhost"
-            }
           }
         ]
       }

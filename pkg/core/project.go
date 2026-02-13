@@ -8,8 +8,9 @@ type Project struct {
 
 // PlanEntry is a named test plan (root element) inside a project.
 type PlanEntry struct {
-	Name string
-	Root TestElement
+	Name       string
+	Root       TestElement
+	Parameters []Parameter
 }
 
 // NewProject creates a project with the given name and no plans.
@@ -19,7 +20,7 @@ func NewProject(name string) *Project {
 
 // AddPlan appends a new plan to the project.
 func (p *Project) AddPlan(name string, root TestElement) {
-	p.Plans = append(p.Plans, PlanEntry{Name: name, Root: root})
+	p.Plans = append(p.Plans, PlanEntry{Name: name, Root: root, Parameters: make([]Parameter, 0)})
 }
 
 // RemovePlanAt removes the plan at the given index. Does nothing if index is out of range.
