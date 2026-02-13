@@ -67,17 +67,6 @@ Perfolizer is a lightweight, JMeter-like load testing tool written in Golang. It
    go run cmd/perfolizer/main.go
    ```
 
-### Building standalone binaries (macOS + Windows)
-
-The agent (`cmd/agent`) and UI (`cmd/perfolizer`) are built separately. Below are four example cross-compile commands (macOS + Windows):
-
-```bash
-GOOS=darwin GOARCH=arm64 go build -o dist/agent-darwin-arm64 ./cmd/agent
-GOOS=darwin GOARCH=arm64 go build -o dist/perfolizer-darwin-arm64 ./cmd/perfolizer
-GOOS=windows GOARCH=amd64 go build -o dist/agent-windows-amd64.exe ./cmd/agent
-GOOS=windows GOARCH=amd64 go build -o dist/perfolizer-windows-amd64.exe ./cmd/perfolizer
-```
-
 ### Agent Configuration
 
 Default config file: `config/agent.json`
