@@ -85,7 +85,12 @@ GOOS=windows GOARCH=amd64 go build -o dist/perfolizer-windows-amd64.exe ./cmd/pe
 To get app icons in macOS Finder/Dock, build `.app` bundles:
 
 ```bash
-./scripts/build_macos_apps.sh
+./scripts/macos/build_macos_apps.sh
+```
+
+PowerShell (Windows):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\macos\build_macos_apps.ps1
 ```
 
 Outputs:
@@ -98,6 +103,11 @@ Outputs:
 ./scripts/build_linux_apps.sh
 ```
 
+PowerShell (Windows):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_linux_apps.ps1
+```
+
 Outputs (when Linux UI toolchain is available):
 - `dist/linux/Perfolizer-linux-amd64` + `dist/linux/Perfolizer-linux-amd64.tar.gz`
 - `dist/linux/Perfolizer-Agent-linux-amd64` + `dist/linux/Perfolizer-Agent-linux-amd64.tar.gz`
@@ -106,13 +116,30 @@ If Fyne UI cannot be cross-compiled in the current environment, the script still
 ### Building Windows bundles with icons
 
 ```bash
-./scripts/build_windows_apps.sh
+./scripts/windows/build_windows_apps.sh
+```
+
+PowerShell (Windows):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\build_windows_apps.ps1
 ```
 
 Outputs (when Windows UI toolchain is available):
 - `dist/windows/Perfolizer-windows-amd64` + `dist/windows/Perfolizer-windows-amd64.zip`
 - `dist/windows/Perfolizer-Agent-windows-amd64` + `dist/windows/Perfolizer-Agent-windows-amd64.zip`
 If Fyne UI cannot be cross-compiled in the current environment, the script still builds the agent bundle and prints a warning.
+
+### Building all targets from macOS
+
+```bash
+./scripts/macos/build_all_targets.sh
+```
+
+### Building all targets from Windows
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\build_all_targets.ps1
+```
 
 ### Agent Configuration
 
