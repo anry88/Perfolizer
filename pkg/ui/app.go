@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"perfolizer/assets/icons"
 	"perfolizer/pkg/core"
 	"perfolizer/pkg/elements"
 	"regexp"
@@ -154,6 +155,7 @@ const (
 
 func NewPerfolizerApp() *PerfolizerApp {
 	a := app.NewWithID("com.github.anry88.perfolizer")
+	a.SetIcon(fyne.NewStaticResource("perfolizer-ui.png", icons.UIBuildIconPNG()))
 	w := a.NewWindow("Perfolizer")
 	w.Resize(fyne.NewSize(1024, 768))
 

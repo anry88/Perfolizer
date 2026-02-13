@@ -26,6 +26,7 @@ Perfolizer is a lightweight, JMeter-like load testing tool written in Golang. It
 -   **Remote Agent Execution**: Test plans are sent from UI to a separate agent process.
 -   **Prometheus Metrics**: Agent exposes `/metrics` with RPS, latency, errors, and totals.
 -   **Polling Dashboard**: UI fetches agent metrics every 15 seconds and updates charts.
+-   **Dedicated Build Icons**: `assets/icons/perfolizer-ui.png` is used by UI build, `assets/icons/perfolizer-agent.png` is used by agent build (`/favicon.ico`).
 
 ## Prerequisites
 
@@ -76,6 +77,68 @@ GOOS=darwin GOARCH=arm64 go build -o dist/agent-darwin-arm64 ./cmd/agent
 GOOS=darwin GOARCH=arm64 go build -o dist/perfolizer-darwin-arm64 ./cmd/perfolizer
 GOOS=windows GOARCH=amd64 go build -o dist/agent-windows-amd64.exe ./cmd/agent
 GOOS=windows GOARCH=amd64 go build -o dist/perfolizer-windows-amd64.exe ./cmd/perfolizer
+```
+
+### Building macOS app bundles with icons
+
+`go build` creates plain binaries and Finder usually shows a default icon for them.
+To get app icons in macOS Finder/Dock, build `.app` bundles:
+
+```bash
+./scripts/macos/build_macos_apps.sh
+```
+
+PowerShell (Windows):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\macos\build_macos_apps.ps1
+```
+
+Outputs:
+- `dist/Perfolizer.app` (uses `assets/icons/perfolizer-ui.png`)
+- `dist/Perfolizer Agent.app` (uses `assets/icons/perfolizer-agent.png`)
+
+### Building Linux bundles with icons
+
+```bash
+./scripts/build_linux_apps.sh
+```
+
+PowerShell (Windows):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_linux_apps.ps1
+```
+
+Outputs (when Linux UI toolchain is available):
+- `dist/linux/Perfolizer-linux-amd64` + `dist/linux/Perfolizer-linux-amd64.tar.gz`
+- `dist/linux/Perfolizer-Agent-linux-amd64` + `dist/linux/Perfolizer-Agent-linux-amd64.tar.gz`
+If Fyne UI cannot be cross-compiled in the current environment, the script still builds the agent bundle and prints a warning.
+
+### Building Windows bundles with icons
+
+```bash
+./scripts/windows/build_windows_apps.sh
+```
+
+PowerShell (Windows):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\build_windows_apps.ps1
+```
+
+Outputs (when Windows UI toolchain is available):
+- `dist/windows/Perfolizer-windows-amd64` + `dist/windows/Perfolizer-windows-amd64.zip`
+- `dist/windows/Perfolizer-Agent-windows-amd64` + `dist/windows/Perfolizer-Agent-windows-amd64.zip`
+If Fyne UI cannot be cross-compiled in the current environment, the script still builds the agent bundle and prints a warning.
+
+### Building all targets from macOS
+
+```bash
+./scripts/macos/build_all_targets.sh
+```
+
+### Building all targets from Windows
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\build_all_targets.ps1
 ```
 
 ### Agent Configuration
