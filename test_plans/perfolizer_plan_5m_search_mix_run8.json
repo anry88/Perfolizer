@@ -1,0 +1,94 @@
+{
+  "type": "TestPlan",
+  "id": "oc_plan_20260221_run8",
+  "name": "Google+Yandex+Cloved with Search 5m",
+  "enabled": true,
+  "children": [
+    {
+      "type": "RPSThreadGroup",
+      "id": "oc_rps_20260221_run8",
+      "name": "RPS Group",
+      "enabled": true,
+      "props": {
+        "GracefulShutdownMS": 0,
+        "Parameters": null,
+        "ProfileBlocks": [
+          {
+            "ProfilePercent": 100,
+            "RampUpMS": 0,
+            "StepDurationMS": 300000
+          }
+        ],
+        "RPS": 12,
+        "Users": 16
+      },
+      "children": [
+        {
+          "type": "HttpSampler",
+          "id": "oc_http_google_home_run8",
+          "name": "google-home",
+          "enabled": true,
+          "props": {
+            "Body": "",
+            "ExtractVars": null,
+            "Method": "GET",
+            "TargetRPS": 3,
+            "Url": "https://google.com"
+          }
+        },
+        {
+          "type": "HttpSampler",
+          "id": "oc_http_google_search_run8",
+          "name": "google-search-perfolizer",
+          "enabled": true,
+          "props": {
+            "Body": "",
+            "ExtractVars": null,
+            "Method": "GET",
+            "TargetRPS": 1,
+            "Url": "https://www.google.com/search?q=Perfolizer"
+          }
+        },
+        {
+          "type": "HttpSampler",
+          "id": "oc_http_yandex_home_run8",
+          "name": "yandex-home",
+          "enabled": true,
+          "props": {
+            "Body": "",
+            "ExtractVars": null,
+            "Method": "GET",
+            "TargetRPS": 5,
+            "Url": "https://yandex.com"
+          }
+        },
+        {
+          "type": "HttpSampler",
+          "id": "oc_http_yandex_search_run8",
+          "name": "yandex-search-perfolizer",
+          "enabled": true,
+          "props": {
+            "Body": "",
+            "ExtractVars": null,
+            "Method": "GET",
+            "TargetRPS": 1,
+            "Url": "https://yandex.com/search/?text=Perfolizer"
+          }
+        },
+        {
+          "type": "HttpSampler",
+          "id": "oc_http_cloved_home_run8",
+          "name": "cloved-home",
+          "enabled": true,
+          "props": {
+            "Body": "",
+            "ExtractVars": null,
+            "Method": "GET",
+            "TargetRPS": 2,
+            "Url": "https://cloved.ai"
+          }
+        }
+      ]
+    }
+  ]
+}
