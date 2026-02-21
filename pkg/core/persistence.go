@@ -72,6 +72,9 @@ func ReadProject(r io.Reader) (*Project, error) {
 	if err := json.NewDecoder(r).Decode(&dto); err != nil {
 		return nil, err
 	}
+	if len(dto.Plans) == 0 {
+		return nil, fmt.Errorf("invalid project format: no plans found")
+	}
 	proj := &Project{Name: dto.Name, Plans: make([]PlanEntry, 0, len(dto.Plans))}
 	for _, pe := range dto.Plans {
 		root, err := fromDTO(pe.Plan)
