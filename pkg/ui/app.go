@@ -130,10 +130,14 @@ type PerfolizerApp struct {
 	agentRuntime  map[string]agentRuntimeState
 	agentStateMu  sync.RWMutex
 
+	runStateMu sync.Mutex
+
 	cancelFunc     context.CancelFunc
 	isRunning      bool
 	isDebugRunning bool
 	runningAgentID string
+	runSessionID   uint64
+	runSessionSeq  uint64
 
 	settingsWindow fyne.Window
 
@@ -924,7 +928,7 @@ func (pa *PerfolizerApp) loadTestPlan() {
 }
 
 func (pa *PerfolizerApp) runTest() {
-	if pa.isRunning {
+	if pa.isRunStateActive() {
 		return
 	}
 
@@ -961,22 +965,22 @@ func (pa *PerfolizerApp) runTest() {
 		return
 	}
 
-	if pa.cancelFunc != nil {
-		pa.cancelFunc()
-		pa.cancelFunc = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	started, previousCancel, runSessionID := pa.tryStartRunState(agentID, cancel)
+	if !started {
+		cancel()
+		return
+	}
+	if previousCancel != nil {
+		previousCancel()
 	}
 
-	pa.isRunning = true
-	pa.runningAgentID = agentID
 	pa.markAgentRunStarted(agentID, pa.currentPlanDisplayName(), time.Now())
 
 	dashboard := NewDashboardWindow(pa.FyneApp)
 	dashboard.Show()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	pa.cancelFunc = cancel
-
-	go pa.pollAgentMetrics(ctx, dashboard, agentID, client)
+	go pa.pollAgentMetrics(ctx, dashboard, agentID, runSessionID, client)
 }
 
 func (pa *PerfolizerApp) runDebugTest() {
@@ -1148,12 +1152,11 @@ func (pa *PerfolizerApp) appendDebugItem(text string) {
 }
 
 func (pa *PerfolizerApp) stopTest() {
-	if pa.cancelFunc != nil {
-		pa.cancelFunc()
-		pa.cancelFunc = nil
+	runningAgentID, cancel, _ := pa.stopRunState()
+	if cancel != nil {
+		cancel()
 	}
-	pa.isRunning = false
-	agentID, client, err := pa.resolveStopTargetAgent()
+	agentID, client, err := pa.resolveStopTargetAgent(runningAgentID)
 	if err != nil {
 		return
 	}
@@ -1163,11 +1166,10 @@ func (pa *PerfolizerApp) stopTest() {
 		return
 	}
 	pa.markAgentIdle(agentID)
-	pa.runningAgentID = ""
 }
 
-func (pa *PerfolizerApp) pollAgentMetrics(ctx context.Context, dashboard *DashboardWindow, agentID string, client *AgentClient) {
-	pa.pollOnce(dashboard, agentID, client)
+func (pa *PerfolizerApp) pollAgentMetrics(ctx context.Context, dashboard *DashboardWindow, agentID string, runSessionID uint64, client *AgentClient) {
+	pa.pollOnce(dashboard, agentID, runSessionID, client)
 
 	ticker := time.NewTicker(pa.pollInterval)
 	defer ticker.Stop()
@@ -1177,12 +1179,12 @@ func (pa *PerfolizerApp) pollAgentMetrics(ctx context.Context, dashboard *Dashbo
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pa.pollOnce(dashboard, agentID, client)
+			pa.pollOnce(dashboard, agentID, runSessionID, client)
 		}
 	}
 }
 
-func (pa *PerfolizerApp) pollOnce(dashboard *DashboardWindow, agentID string, client *AgentClient) {
+func (pa *PerfolizerApp) pollOnce(dashboard *DashboardWindow, agentID string, runSessionID uint64, client *AgentClient) {
 	snapshot, err := client.FetchSnapshot()
 	if err != nil {
 		pa.markAgentUnavailable(agentID, err)
@@ -1192,13 +1194,66 @@ func (pa *PerfolizerApp) pollOnce(dashboard *DashboardWindow, agentID string, cl
 
 	dashboard.Update(snapshot.Data)
 	if !snapshot.Running {
-		pa.isRunning = false
-		pa.runningAgentID = ""
-		if pa.cancelFunc != nil {
-			pa.cancelFunc()
-			pa.cancelFunc = nil
+		cancel, stopped := pa.stopRunStateIfMatches(agentID, runSessionID)
+		if stopped && cancel != nil {
+			cancel()
 		}
 	}
+}
+
+func (pa *PerfolizerApp) isRunStateActive() bool {
+	pa.runStateMu.Lock()
+	defer pa.runStateMu.Unlock()
+	return pa.isRunning
+}
+
+func (pa *PerfolizerApp) getRunState() (isRunning bool, runningAgentID string) {
+	pa.runStateMu.Lock()
+	defer pa.runStateMu.Unlock()
+	return pa.isRunning, pa.runningAgentID
+}
+
+func (pa *PerfolizerApp) tryStartRunState(agentID string, cancel context.CancelFunc) (started bool, previousCancel context.CancelFunc, runSessionID uint64) {
+	pa.runStateMu.Lock()
+	defer pa.runStateMu.Unlock()
+	if pa.isRunning {
+		return false, nil, 0
+	}
+	previousCancel = pa.cancelFunc
+	pa.runSessionSeq++
+	runSessionID = pa.runSessionSeq
+	pa.isRunning = true
+	pa.runningAgentID = agentID
+	pa.cancelFunc = cancel
+	pa.runSessionID = runSessionID
+	return true, previousCancel, runSessionID
+}
+
+func (pa *PerfolizerApp) stopRunState() (runningAgentID string, cancel context.CancelFunc, wasRunning bool) {
+	pa.runStateMu.Lock()
+	defer pa.runStateMu.Unlock()
+	runningAgentID = pa.runningAgentID
+	cancel = pa.cancelFunc
+	wasRunning = pa.isRunning
+	pa.isRunning = false
+	pa.runningAgentID = ""
+	pa.cancelFunc = nil
+	pa.runSessionID = 0
+	return runningAgentID, cancel, wasRunning
+}
+
+func (pa *PerfolizerApp) stopRunStateIfMatches(agentID string, runSessionID uint64) (cancel context.CancelFunc, stopped bool) {
+	pa.runStateMu.Lock()
+	defer pa.runStateMu.Unlock()
+	if !pa.isRunning || pa.runningAgentID != agentID || pa.runSessionID != runSessionID {
+		return nil, false
+	}
+	cancel = pa.cancelFunc
+	pa.isRunning = false
+	pa.runningAgentID = ""
+	pa.cancelFunc = nil
+	pa.runSessionID = 0
+	return cancel, true
 }
 
 // Helper to find parent of a node (DFS)

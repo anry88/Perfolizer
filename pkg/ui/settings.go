@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -238,12 +239,20 @@ func (pa *PerfolizerApp) resolveActiveAgentClient() (string, *AgentClient, error
 	return activeID, client, nil
 }
 
-func (pa *PerfolizerApp) resolveStopTargetAgent() (string, *AgentClient, error) {
-	if pa.runningAgentID != "" {
-		if client := pa.agentClients[pa.runningAgentID]; client != nil {
-			return pa.runningAgentID, client, nil
+func (pa *PerfolizerApp) resolveStopTargetAgent(preferredAgentID string) (string, *AgentClient, error) {
+	if preferredAgentID != "" {
+		if client := pa.agentClients[preferredAgentID]; client != nil {
+			return preferredAgentID, client, nil
 		}
 	}
+
+	_, runningAgentID := pa.getRunState()
+	if runningAgentID != "" {
+		if client := pa.agentClients[runningAgentID]; client != nil {
+			return runningAgentID, client, nil
+		}
+	}
+
 	return pa.resolveActiveAgentClient()
 }
 
@@ -327,20 +336,78 @@ func (pa *PerfolizerApp) getAgentRuntimeState(agentID string) agentRuntimeState 
 	return state
 }
 
-func (pa *PerfolizerApp) refreshAllAgentStates() {
+type agentClientBinding struct {
+	id     string
+	client *AgentClient
+}
+
+func (pa *PerfolizerApp) listAgentBindings() []agentClientBinding {
+	bindings := make([]agentClientBinding, 0, len(pa.agents))
 	for _, agent := range pa.agents {
-		client := pa.agentClients[agent.ID]
-		if client == nil {
-			pa.markAgentUnavailable(agent.ID, fmt.Errorf("no client"))
-			continue
-		}
-		snapshot, err := client.FetchSnapshot()
-		if err != nil {
-			pa.markAgentUnavailable(agent.ID, err)
-			continue
-		}
-		pa.updateAgentRuntimeFromSnapshot(agent.ID, snapshot)
+		bindings = append(bindings, agentClientBinding{
+			id:     agent.ID,
+			client: pa.agentClients[agent.ID],
+		})
 	}
+	return bindings
+}
+
+func (pa *PerfolizerApp) refreshAllAgentStates(bindings []agentClientBinding) {
+	var wg sync.WaitGroup
+
+	for _, binding := range bindings {
+		binding := binding
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			client := binding.client
+			agentID := binding.id
+
+			if client == nil {
+				pa.markAgentUnavailable(agentID, fmt.Errorf("no client"))
+				return
+			}
+			snapshot, err := client.FetchSnapshot()
+			if err != nil {
+				pa.markAgentUnavailable(agentID, err)
+				return
+			}
+			pa.updateAgentRuntimeFromSnapshot(agentID, snapshot)
+		}()
+	}
+
+	wg.Wait()
+}
+
+func (pa *PerfolizerApp) refreshOneAgentState(agentID string, client *AgentClient) {
+	if client == nil {
+		pa.markAgentUnavailable(agentID, fmt.Errorf("agent client is not configured"))
+		return
+	}
+	snapshot, err := client.FetchSnapshot()
+	if err != nil {
+		pa.markAgentUnavailable(agentID, err)
+		return
+	}
+	pa.updateAgentRuntimeFromSnapshot(agentID, snapshot)
+}
+
+func (pa *PerfolizerApp) refreshAllAgentStatesAsync(bindings []agentClientBinding, onDone func()) {
+	go func() {
+		pa.refreshAllAgentStates(bindings)
+		if onDone != nil {
+			fyne.Do(onDone)
+		}
+	}()
+}
+
+func (pa *PerfolizerApp) refreshOneAgentStateAsync(agentID string, client *AgentClient, onDone func()) {
+	go func() {
+		pa.refreshOneAgentState(agentID, client)
+		if onDone != nil {
+			fyne.Do(onDone)
+		}
+	}()
 }
 
 func formatBytes(bytes uint64) string {
@@ -548,13 +615,22 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 		metricsLabel.SetText(formatHostMetrics(runtime.Host))
 	}
 
-	refreshAll := func() {
-		pa.refreshAllAgentStates()
+	var refreshAgentList func()
+	refreshView := func() {
 		refreshAgentIDs()
+		if refreshAgentList != nil {
+			refreshAgentList()
+		}
 		updateDetails()
 	}
+	refreshAll := func() {
+		bindings := pa.listAgentBindings()
+		refreshView()
+		pa.refreshAllAgentStatesAsync(bindings, func() {
+			refreshView()
+		})
+	}
 
-	var refreshAgentList func()
 	agentList := widget.NewList(
 		func() int { return len(agentIDs) },
 		func() fyne.CanvasObject {
@@ -672,10 +748,8 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 			}
 			pa.rebuildAgentClients()
 			pa.saveAgentsToPreferences()
-			refreshAgentIDs()
-			refreshAgentList()
 			selectedID = id
-			updateDetails()
+			refreshAll()
 		}, win)
 		addDialog.Resize(fyne.NewSize(780, 420))
 		addDialog.Show()
@@ -706,9 +780,7 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 			selectedID = ""
 			pa.rebuildAgentClients()
 			pa.saveAgentsToPreferences()
-			refreshAgentIDs()
-			refreshAgentList()
-			updateDetails()
+			refreshAll()
 		}, win)
 	}
 
@@ -739,45 +811,60 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 		pa.rebuildAgentClients()
 		pa.saveAgentsToPreferences()
 		refreshAll()
-		refreshAgentList()
-		updateDetails()
 	}
 
 	restartSelected := func() {
 		if selectedID == "" {
 			return
 		}
-		client := pa.agentClients[selectedID]
+		agentID := selectedID
+		client := pa.agentClients[agentID]
 		if client == nil {
 			dialog.ShowError(fmt.Errorf("agent client is not configured"), win)
 			return
 		}
-		if err := client.StopTest(); err != nil {
-			pa.markAgentUnavailable(selectedID, err)
-			updateDetails()
-			refreshAgentList()
-			dialog.ShowError(err, win)
-			return
-		}
-		snapshot, err := client.FetchSnapshot()
-		if err != nil {
-			pa.markAgentUnavailable(selectedID, err)
-			updateDetails()
-			refreshAgentList()
-			dialog.ShowError(err, win)
-			return
-		}
-		pa.updateAgentRuntimeFromSnapshot(selectedID, snapshot)
-		dialog.ShowInformation("Agent restart", "Agent runtime session restarted.", win)
-		updateDetails()
-		refreshAgentList()
+		waitDialog := dialog.NewCustomWithoutButtons(
+			"Restart agent",
+			container.NewPadded(widget.NewLabel("Restarting agent runtime, please wait...")),
+			win,
+		)
+		waitDialog.Show()
+		go func() {
+			if err := client.StopTest(); err != nil {
+				pa.markAgentUnavailable(agentID, err)
+				fyne.Do(func() {
+					waitDialog.Hide()
+					refreshView()
+					dialog.ShowError(err, win)
+				})
+				return
+			}
+
+			snapshot, err := client.FetchSnapshot()
+			if err != nil {
+				pa.markAgentUnavailable(agentID, err)
+				fyne.Do(func() {
+					waitDialog.Hide()
+					refreshView()
+					dialog.ShowError(err, win)
+				})
+				return
+			}
+			pa.updateAgentRuntimeFromSnapshot(agentID, snapshot)
+			fyne.Do(func() {
+				waitDialog.Hide()
+				refreshView()
+				dialog.ShowInformation("Agent restart", "Agent runtime session restarted.", win)
+			})
+		}()
 	}
 
 	restartProcess := func() {
 		if selectedID == "" {
 			return
 		}
-		client := pa.agentClients[selectedID]
+		agentID := selectedID
+		client := pa.agentClients[agentID]
 		if client == nil {
 			dialog.ShowError(fmt.Errorf("agent client is not configured"), win)
 			return
@@ -785,7 +872,7 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 		var selectedAgent agentSettingsEntry
 		found := false
 		for _, agent := range pa.agents {
-			if agent.ID == selectedID {
+			if agent.ID == agentID {
 				selectedAgent = agent
 				found = true
 				break
@@ -805,11 +892,10 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 		go func() {
 			err := client.RestartProcess(selectedAgent.RestartCommand, selectedAgent.RestartToken)
 			if err != nil {
-				pa.markAgentUnavailable(selectedID, err)
+				pa.markAgentUnavailable(agentID, err)
 				fyne.Do(func() {
 					waitDialog.Hide()
-					updateDetails()
-					refreshAgentList()
+					refreshView()
 					dialog.ShowError(fmt.Errorf("process restart failed: %w", err), win)
 				})
 				return
@@ -817,21 +903,19 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 
 			snapshot, readyErr := waitForAgentReady(client, 45*time.Second)
 			if readyErr != nil {
-				pa.markAgentUnavailable(selectedID, readyErr)
+				pa.markAgentUnavailable(agentID, readyErr)
 				fyne.Do(func() {
 					waitDialog.Hide()
-					updateDetails()
-					refreshAgentList()
+					refreshView()
 					dialog.ShowError(fmt.Errorf("agent did not recover after restart: %w", readyErr), win)
 				})
 				return
 			}
 
-			pa.updateAgentRuntimeFromSnapshot(selectedID, snapshot)
+			pa.updateAgentRuntimeFromSnapshot(agentID, snapshot)
 			fyne.Do(func() {
 				waitDialog.Hide()
-				updateDetails()
-				refreshAgentList()
+				refreshView()
 				dialog.ShowInformation("Restart process", "Agent process restarted successfully.", win)
 			})
 		}()
@@ -840,29 +924,17 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 	refreshSelected := func() {
 		if selectedID == "" {
 			refreshAll()
-			agentList.Refresh()
-			updateDetails()
 			return
 		}
-		client := pa.agentClients[selectedID]
-		if client == nil {
-			pa.markAgentUnavailable(selectedID, fmt.Errorf("agent client is not configured"))
-		} else {
-			snapshot, err := client.FetchSnapshot()
-			if err != nil {
-				pa.markAgentUnavailable(selectedID, err)
-			} else {
-				pa.updateAgentRuntimeFromSnapshot(selectedID, snapshot)
-			}
-		}
-		refreshAgentList()
-		updateDetails()
+		agentID := selectedID
+		client := pa.agentClients[agentID]
+		refreshView()
+		pa.refreshOneAgentStateAsync(agentID, client, func() {
+			refreshView()
+		})
 	}
 
-	refreshAgentIDs()
 	refreshAll()
-	refreshAgentList()
-	updateDetails()
 	if len(agentIDs) > 0 {
 		for i, id := range agentIDs {
 			if id == selectedID {
@@ -880,7 +952,6 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 				widget.NewButton("Remove", removeSelected),
 				widget.NewButton("Refresh", func() {
 					refreshAll()
-					refreshAgentList()
 				}),
 			),
 		),
