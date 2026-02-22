@@ -7,6 +7,19 @@ $scripts = @(
 )
 
 $failed = @()
+$rootDir = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
+$skipTests = ($env:PERFOLIZER_SKIP_TESTS -eq "1")
+
+if ($skipTests) {
+    Write-Host "Skipping pre-build tests (PERFOLIZER_SKIP_TESTS=1)."
+}
+else {
+    Write-Host "=== Running test suite before multi-target build ==="
+    & (Join-Path $rootDir "scripts/run_tests.ps1")
+}
+
+$previousSkip = $env:PERFOLIZER_SKIP_TESTS
+$env:PERFOLIZER_SKIP_TESTS = "1"
 
 foreach ($scriptName in $scripts) {
     $scriptPath = (Resolve-Path (Join-Path $PSScriptRoot $scriptName)).Path
@@ -18,6 +31,13 @@ foreach ($scriptName in $scripts) {
         Write-Warning ("{0} failed: {1}" -f $scriptName, $_.Exception.Message)
         $failed += $scriptName
     }
+}
+
+if ($null -eq $previousSkip) {
+    Remove-Item Env:PERFOLIZER_SKIP_TESTS -ErrorAction SilentlyContinue
+}
+else {
+    $env:PERFOLIZER_SKIP_TESTS = $previousSkip
 }
 
 if ($failed.Count -gt 0) {

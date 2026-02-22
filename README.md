@@ -68,6 +68,28 @@ Perfolizer is a lightweight, JMeter-like load testing tool written in Golang. It
    go run cmd/perfolizer/main.go
    ```
 
+### Running Tests
+
+Run all tests:
+
+```bash
+./scripts/run_tests.sh
+```
+
+PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\\scripts\\run_tests.ps1
+```
+
+Test layout:
+- `tests/core`: unit tests for `pkg/core`
+- `tests/config`: unit tests for `pkg/config`
+- `tests/elements`: unit tests for `pkg/elements`
+
+All release build scripts run tests automatically before packaging.
+To skip this gate explicitly, set `PERFOLIZER_SKIP_TESTS=1`.
+
 ### Building standalone binaries (macOS + Windows)
 
 The agent (`cmd/agent`) and UI (`cmd/perfolizer`) are built separately. Below are four example cross-compile commands (macOS + Windows):
@@ -225,3 +247,4 @@ go run cmd/perfolizer/main.go
 -   `pkg/ui`: Fyne-based GUI implementation.
 -   `pkg/agent`: Runtime execution agent and Prometheus exporter.
 -   `pkg/config`: Shared configuration loader for agent/UI connectivity.
+-   `tests/*`: External-package tests grouped by domain (`core`, `config`, `elements`).

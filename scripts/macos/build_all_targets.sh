@@ -12,11 +12,18 @@ scripts=(
 
 failed=()
 
+if [ "${PERFOLIZER_SKIP_TESTS:-0}" = "1" ]; then
+	echo "Skipping pre-build tests (PERFOLIZER_SKIP_TESTS=1)."
+else
+	echo "=== Running test suite before multi-target build ==="
+	"$ROOT_DIR/scripts/run_tests.sh"
+fi
+
 for script in "${scripts[@]}"; do
 	rel_script="${script#$ROOT_DIR/}"
 	echo
 	echo "=== Running $rel_script ==="
-	if ! "$script"; then
+	if ! PERFOLIZER_SKIP_TESTS=1 "$script"; then
 		echo "warning: failed: $script" >&2
 		failed+=("$script")
 	fi

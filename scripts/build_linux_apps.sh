@@ -15,10 +15,20 @@ require_cmd() {
 require_cmd go
 require_cmd tar
 
+run_prebuild_tests() {
+	if [ "${PERFOLIZER_SKIP_TESTS:-0}" = "1" ]; then
+		echo "Skipping pre-build tests (PERFOLIZER_SKIP_TESTS=1)."
+		return
+	fi
+	"$ROOT_DIR/scripts/run_tests.sh"
+}
+
 mkdir -p "$ROOT_DIR/.cache/go-build"
 export GOCACHE="$ROOT_DIR/.cache/go-build"
 
 mkdir -p "$DIST_DIR"
+
+run_prebuild_tests
 
 build_linux_bundle() {
 	local app_dir_name="$1"

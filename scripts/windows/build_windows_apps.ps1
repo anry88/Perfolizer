@@ -7,6 +7,15 @@ function Require-Command {
     }
 }
 
+function Invoke-PreBuildTests {
+    param([Parameter(Mandatory = $true)][string]$RootDir)
+    if ($env:PERFOLIZER_SKIP_TESTS -eq "1") {
+        Write-Host "Skipping pre-build tests (PERFOLIZER_SKIP_TESTS=1)."
+        return
+    }
+    & (Join-Path $RootDir "scripts/run_tests.ps1")
+}
+
 function Invoke-GoBuild {
     param(
         [Parameter(Mandatory = $true)][string]$TargetOS,
@@ -91,6 +100,8 @@ $distDir = Join-Path $rootDir "dist/windows"
 
 Require-Command "go"
 Require-Command "python3"
+
+Invoke-PreBuildTests -RootDir $rootDir
 
 $goCache = Join-Path $rootDir ".cache/go-build"
 New-Item -ItemType Directory -Path $goCache -Force | Out-Null
