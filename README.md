@@ -1,76 +1,139 @@
 # Perfolizer
 
-Perfolizer is a lightweight, JMeter-like load testing tool written in Golang. It provides a native GUI for creating and running performance tests using a tree-based structure, similar to JMeter, but powered by the efficiency of Go.
+Perfolizer is a Go-based load testing tool with a native desktop UI, a separate execution agent, and Prometheus-native runtime visibility.
 
-## Architecture
+It is built for teams that want a visual performance-testing workflow without coupling test authoring to the load generator process. The current product focuses on HTTP/API scenarios, tree-based plan editing, live metrics, agent management, and request/debug extraction workflows.
 
-- **UI process (`cmd/perfolizer`)**: builds/edits test plans and visualizes runtime metrics.
-- **Agent process (`cmd/agent`)**: executes tests in a separate process and exposes Prometheus metrics.
-- **Decoupling**: UI remains responsive and independent from test execution lifecycle.
+Perfolizer is not trying to replace every performance-testing stack. It sits between heavyweight GUI-first tooling and code-first runners: a desktop workflow for building plans visually, running them through a dedicated agent, and inspecting runtime data through Prometheus-style metrics.
 
-## Features
+| Test Plan Editor | Runtime Dashboard |
+| --- | --- |
+| ![Perfolizer test plan editor](docs/screenshots/editor-overview.png) | ![Perfolizer runtime dashboard](docs/screenshots/runtime-dashboard.png) |
+| Agent Settings | Debug Console |
+| ![Perfolizer agent settings](docs/screenshots/agent-settings.png) | ![Perfolizer debug console](docs/screenshots/debug-console.png) |
 
--   **Pure Golang**: Built with Go for high performance and easy compilation.
--   **Visual Test Plans**: Create test scenarios using a GUI with a tree structure.
--   **Code-First Support**: (Planned) Define scenarios directly in Go code.
--   **Load Generators**:
-    -   **Simple Thread Group**: Fixed number of users and iterations.
-    -   **RPS Thread Group**: Target Requests Per Second with concurrent workers.
--   **Samplers**:
-    -   **HTTP Sampler**: Perform GET/POST/PUT/DELETE requests.
--   **Logic Controllers**:
-    -   **Loop Controller**: Repeat actions a specific number of times.
-    -   **If Controller**: Conditionally execute children.
-    -   **Pause Controller**: Add delays between actions.
--   **Live Monitoring**: (In Progress) View test progress and structure.
--   **Remote Agent Execution**: Test plans are sent from UI to a separate agent process.
--   **Prometheus Metrics**: Agent exposes `/metrics` with RPS, latency, errors, and totals.
--   **Polling Dashboard**: UI fetches agent metrics every 15 seconds and updates charts.
--   **Dedicated Build Icons**: `assets/icons/perfolizer-ui.png` is used by UI build, `assets/icons/perfolizer-agent.png` is used by agent build (`/favicon.ico`).
+## Why Perfolizer For This Workflow?
 
-## Prerequisites
+- Native desktop editor for tree-based test plans, parameters, and request debugging.
+- Separate execution agent keeps the UI responsive and decouples authoring from the test runtime lifecycle.
+- Prometheus metrics are exposed directly by the agent at `/metrics`, which makes it easy to integrate with existing observability workflows.
+- Smaller Go codebase and split UI/agent architecture are designed for fast local iteration during test authoring and product evolution.
+- Project files are JSON-serializable and the agent accepts test plans over HTTP, which makes scripted generation and AI-assisted workflows practical.
 
--   **Go 1.20+**: Ensure Go is installed and available in your PATH.
--   **Fyne Dependencies**: You may need C compilers for Fyne (usually `gcc` on Linux/Mac, or Mingw on Windows) if not already present, though pure Go modules often suffice for basic builds.
+## Where It Fits
 
-## Installation & Setup
+- Internal performance tooling and platform engineering use cases.
+- API/performance engineers who want GUI-driven authoring with a dedicated runtime process.
+- Teams already invested in Prometheus/Grafana style observability.
+- Workflows where a code-only runner is not the preferred authoring model, but a traditional JMeter setup feels heavier than necessary.
 
-1.  **Clone the repository**:
-    ```bash
-    git clone git@github.com:anry88/Perfolizer.git
-    cd perfolizer
-    ```
+## Comparison At A Glance
 
-2.  **Initialize dependencies** (if not already done):
-    ```bash
-    go mod init perfolizer
-    go mod tidy
-    ```
-    *Note: This project uses `fyne.io/fyne/v2` for the UI and `golang.org/x/time/rate` for rate limiting.*
+| Category | Perfolizer | JMeter | k6 |
+| --- | --- | --- | --- |
+| Primary interface | Native desktop GUI + separate agent | Desktop GUI with CLI/remote modes | CLI runner with scripted tests |
+| Test authoring model | Visual tree editor with JSON-backed plans | GUI test plans and XML-based configuration | Code-first scripts |
+| Runtime separation | Dedicated agent process by default | GUI and engine are commonly used together, with remote engines available when needed | Runner process/container driven from CLI or CI |
+| Observability workflow | Built-in Prometheus `/metrics` endpoint on the agent | Listener/exporter setup depends on project configuration | Built-in summaries plus outputs/integrations |
+| Local iteration style | Edit visually, run on an agent, inspect metrics/debug data | GUI authoring with a broader runtime surface | Edit scripts, run from terminal/CI |
+| Best fit | Desktop-first load tooling with agent-based execution and Prometheus visibility | Broad, established GUI-driven load testing workflows | Code-centric, automation-heavy performance pipelines |
 
-3.  **Install dependencies**:
-    ```bash
-    go get fyne.io/fyne/v2
-    go get golang.org/x/time/rate
-    ```
+## Current Capabilities
 
-## Usage
+- Native desktop UI built with Fyne.
+- Separate agent process for test execution.
+- Multi-plan project persistence with JSON serialization.
+- Thread groups:
+  - `Simple Thread Group`
+  - `RPS Thread Group`
+- Samplers:
+  - `HTTP Sampler`
+- Logic controllers:
+  - `Loop Controller`
+  - `If Controller`
+  - `Pause Controller`
+- Runtime dashboard with RPS, latency, and error charts.
+- Agent settings view with runtime status and host metrics.
+- HTTP debug workflow with request/response inspection and parameter extraction testing.
+- Cross-platform build and packaging scripts for macOS, Linux, and Windows.
 
-### Running the GUI
+## Automation-Friendly By Design
 
-1. Start the agent in a separate process:
-   ```bash
-   go run cmd/agent/main.go
-   ```
+- Projects and test plans are JSON-based and can be saved, loaded, and generated outside the UI.
+- The agent accepts serialized plans through `POST /run`, which makes external orchestration straightforward.
+- That opens the door to AI-assisted test drafting, parameter generation, and report automation around the existing agent API.
+- The desktop UI is still the primary shipped authoring surface today; model-driven orchestration is a natural extension, not a headline claim.
 
-2. Start the GUI:
-   ```bash
-   go run cmd/perfolizer/main.go
-   ```
+## Architecture Overview
 
-### Running Tests
+- `cmd/perfolizer`: native desktop application for plan editing, runtime dashboards, debugging, and agent management.
+- `cmd/agent`: execution agent exposing HTTP control surfaces, Prometheus metrics, host metrics, and admin restart hooks.
+- `pkg/ui`: Fyne-based UI layer.
+- `pkg/agent`: execution runtime, metrics exporter, and admin/debug HTTP surfaces.
+- `pkg/core`: plan model, runtime context, persistence, stats, and shared interfaces.
+- `pkg/elements`: concrete thread groups, samplers, and controllers.
+- `pkg/config`: shared agent/UI connectivity configuration.
 
-Run all tests:
+### Runtime Surfaces
+
+The agent currently exposes these outward-facing HTTP endpoints:
+
+- `POST /run`: start a test from a serialized plan payload.
+- `POST /stop`: stop the active run.
+- `GET /metrics`: Prometheus-format runtime and host metrics.
+- `POST /debug/http`: execute a single HTTP request for debugging/extraction workflows.
+- `GET /healthz`: basic liveness endpoint.
+- `POST /admin/restart`: optional admin-only remote process restart hook.
+
+## File Map
+
+- `AGENTS.md`: repo-level onboarding for coding agents and contributors.
+- `README.md`: product overview and operating notes.
+- `cmd/README.md`: executable entrypoint map and repo utilities.
+- `cmd/perfolizer`: desktop app entry point.
+- `cmd/agent`: agent entry point.
+- `cmd/generate_screenshots`: deterministic screenshot generator for README assets.
+- `pkg/README.md`: package map for the product code.
+- `pkg/ui`: windows, charts, settings, agent client, and editor logic.
+- `pkg/agent`: HTTP server, metrics rendering, host metrics, and restart handling.
+- `pkg/core`: persistence, context, stats, and interfaces.
+- `pkg/elements`: samplers, controllers, and thread groups.
+- `pkg/config`: shared config loading and derived addresses.
+- `tests/README.md`: test layout and coverage map.
+- `scripts/`: build, packaging, and test scripts.
+- `docs/screenshots/`: README showcase assets.
+
+## Running Locally
+
+Start the agent:
+
+```bash
+go run ./cmd/agent
+```
+
+Start the desktop UI:
+
+```bash
+go run ./cmd/perfolizer
+```
+
+By default both use `config/agent.json`. To point the agent at another config file:
+
+```bash
+PERFOLIZER_AGENT_CONFIG=/path/to/agent.json go run ./cmd/agent
+```
+
+The same config file is also used by the UI when it creates the default local-agent connection.
+
+## Running Checks
+
+Quick project-wide test run:
+
+```bash
+go test ./...
+```
+
+Coverage-aware script:
 
 ```bash
 ./scripts/run_tests.sh
@@ -79,172 +142,91 @@ Run all tests:
 PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\\scripts\\run_tests.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run_tests.ps1
 ```
 
-Test layout:
-- `tests/core`: unit tests for `pkg/core`
-- `tests/config`: unit tests for `pkg/config`
-- `tests/elements`: unit tests for `pkg/elements`
+## Building
 
-All release build scripts run tests automatically before packaging.
-To skip this gate explicitly, set `PERFOLIZER_SKIP_TESTS=1`.
-
-### Building standalone binaries (macOS + Windows)
-
-The agent (`cmd/agent`) and UI (`cmd/perfolizer`) are built separately. Below are four example cross-compile commands (macOS + Windows):
+Build the agent and UI binaries directly:
 
 ```bash
-GOOS=darwin GOARCH=arm64 go build -o dist/agent-darwin-arm64 ./cmd/agent
-GOOS=darwin GOARCH=arm64 go build -o dist/perfolizer-darwin-arm64 ./cmd/perfolizer
-GOOS=windows GOARCH=amd64 go build -o dist/agent-windows-amd64.exe ./cmd/agent
-GOOS=windows GOARCH=amd64 go build -o dist/perfolizer-windows-amd64.exe ./cmd/perfolizer
+go build ./cmd/agent
+go build ./cmd/perfolizer
 ```
 
-### Building macOS app bundles with icons
+Platform packaging scripts:
 
-`go build` creates plain binaries and Finder usually shows a default icon for them.
-To get app icons in macOS Finder/Dock, build `.app` bundles:
+- macOS app bundles: `./scripts/macos/build_macos_apps.sh`
+- Linux bundles: `./scripts/build_linux_apps.sh`
+- Windows bundles: `./scripts/windows/build_windows_apps.sh`
+- Full cross-target packaging from macOS: `./scripts/macos/build_all_targets.sh`
+- Full cross-target packaging from Windows: `powershell -ExecutionPolicy Bypass -File .\scripts\windows\build_all_targets.ps1`
 
-```bash
-./scripts/macos/build_macos_apps.sh
-```
+Note: Fyne-based UI builds may require native toolchain dependencies on the target platform.
 
-PowerShell (Windows):
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\macos\build_macos_apps.ps1
-```
+## Agent Configuration
 
-Outputs:
-- `dist/Perfolizer.app` (uses `assets/icons/perfolizer-ui.png`)
-- `dist/Perfolizer Agent.app` (uses `assets/icons/perfolizer-agent.png`)
-
-### Building Linux bundles with icons
-
-```bash
-./scripts/build_linux_apps.sh
-```
-
-PowerShell (Windows):
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_linux_apps.ps1
-```
-
-Outputs (when Linux UI toolchain is available):
-- `dist/linux/Perfolizer-linux-amd64` + `dist/linux/Perfolizer-linux-amd64.tar.gz`
-- `dist/linux/Perfolizer-Agent-linux-amd64` + `dist/linux/Perfolizer-Agent-linux-amd64.tar.gz`
-If Fyne UI cannot be cross-compiled in the current environment, the script still builds the agent bundle and prints a warning.
-
-### Building Windows bundles with icons
-
-```bash
-./scripts/windows/build_windows_apps.sh
-```
-
-PowerShell (Windows):
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\windows\build_windows_apps.ps1
-```
-
-Outputs (when Windows UI toolchain is available):
-- `dist/windows/Perfolizer-windows-amd64` + `dist/windows/Perfolizer-windows-amd64.zip`
-- `dist/windows/Perfolizer-Agent-windows-amd64` + `dist/windows/Perfolizer-Agent-windows-amd64.zip`
-If Fyne UI cannot be cross-compiled in the current environment, the script still builds the agent bundle and prints a warning.
-
-### Building all targets from macOS
-
-```bash
-./scripts/macos/build_all_targets.sh
-```
-
-### Building all targets from Windows
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\windows\build_all_targets.ps1
-```
-
-### Agent Configuration
-
-Default config file: `config/agent.json`
+Minimal config example:
 
 ```json
 {
   "listen_host": "127.0.0.1",
   "port": 9090,
-  "ui_poll_interval_seconds": 15,
-  "enable_remote_restart": false,
-  "remote_restart_token": "",
-  "remote_restart_command": ""
+  "ui_poll_interval_seconds": 5
 }
 ```
 
-You can override config path with:
-```bash
-PERFOLIZER_AGENT_CONFIG=/path/to/agent.json go run cmd/agent/main.go
-```
+Supported optional fields:
 
-The same config is used by UI client to connect to the agent.
+- `ui_connect_host`: override the host the UI should use when deriving the default base URL.
+- `enable_remote_restart`: enable the admin restart endpoint.
+- `remote_restart_token`: shared secret expected in `X-Perfolizer-Admin-Token`.
+- `remote_restart_command`: shell command executed by the agent when a remote restart is accepted.
 
-### Remote process restart (via UI)
+When `listen_host` is `0.0.0.0`, `ui_connect_host` is useful if the shared config should still resolve to a specific address instead of falling back to `127.0.0.1`.
 
-Perfolizer can restart a remote agent process from the UI by sending an admin command to the agent API.
+## Remote Restart From The UI
 
-1. Enable remote restart in the remote agent config:
+Perfolizer can trigger a remote agent process restart from the agent settings page when the feature is explicitly enabled in agent config.
+
+Example:
 
 ```json
 {
   "listen_host": "0.0.0.0",
   "port": 9090,
-  "ui_poll_interval_seconds": 15,
+  "ui_poll_interval_seconds": 5,
   "enable_remote_restart": true,
   "remote_restart_token": "replace-with-strong-secret",
   "remote_restart_command": "sudo systemctl restart perfolizer-agent"
 }
 ```
 
-2. Start the agent with that config:
+UI flow:
 
-```bash
-PERFOLIZER_AGENT_CONFIG=/path/to/agent.json go run cmd/agent/main.go
-```
+1. Open `Settings`.
+2. Go to `Agents`.
+3. Select the target agent.
+4. Set the same restart token and, optionally, a request-specific restart command.
+5. Use `Restart process`.
 
-3. In UI open `Settings -> Agents`, select the agent and configure:
-- `Restart token`: same value as `remote_restart_token`
-- `Restart command`: optional; if empty, agent uses `remote_restart_command` from its config
+## Security And Operations Notes
 
-4. Click `Restart process` in the agent runtime panel.
+- Keep the agent bound to loopback by default unless there is a clear operational reason to expose it elsewhere.
+- If the agent must be reachable from another machine, place it behind a VPN, private network, firewall rules, or another trusted access boundary.
+- Treat `POST /admin/restart` as an admin-only capability. It is disabled by default and can execute a configured shell command.
+- Do not expose restart tokens in public screenshots, examples, or shared configs.
+- If you need public or cross-network access, pair the agent with transport security and upstream authentication instead of exposing admin endpoints directly.
 
-Notes:
-- Remote restart endpoint is `POST /admin/restart`.
-- If `enable_remote_restart` is `false`, restart returns `403`.
-- If token is configured and does not match, restart returns `401`.
-- Keep `remote_restart_token` secret and avoid exposing agent admin API publicly.
+## Roadmap
 
-### Legacy GUI-only start
+- Assertions and richer validation rules.
+- CSV/data sources and more flexible parameter feeds.
+- Distributed multi-agent orchestration.
+- Exportable reports and run artifacts.
+- CLI/headless mode for non-GUI execution workflows.
+- Richer code-first, debug, and AI-assisted authoring/report flows.
 
-To start the graphical interface:
+## License
 
-```bash
-go run cmd/perfolizer/main.go
-```
-
-### Creating a Test Plan
-
-1.  **Launch the App**: The main window will open with a default "Test Plan".
-2.  **Tree Structure**:
-    -   The left panel shows your Test Plan hierarchy.
-    -   The right panel shows the properties of the selected element.
-3.  **Edit Properties**:
-    -   Select a node (e.g., "Thread Group 1") to change its settings (Number of Users, etc.).
-    -   (Note: In this MVP version, adding new nodes via the UI context menu is the next planned feature. Currently, the tree structure is defined in `pkg/ui/app.go` setup).
-
-## Project Structure
-
--   `cmd/perfolizer`: Entry point (Main application).
--   `cmd/agent`: Agent entry point (HTTP API for test execution + `/metrics`).
--   `pkg/core`: Core engine interfaces (`TestElement`, `Sampler`, `Context`).
--   `pkg/elements`: Implementation of components (Thread Groups, HttpSampler, Controllers).
--   `pkg/ui`: Fyne-based GUI implementation.
--   `pkg/agent`: Runtime execution agent and Prometheus exporter.
--   `pkg/config`: Shared configuration loader for agent/UI connectivity.
--   `tests/*`: External-package tests grouped by domain (`core`, `config`, `elements`).
+[LICENSE](LICENSE)
