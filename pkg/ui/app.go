@@ -183,6 +183,10 @@ const (
 
 func NewPerfolizerApp() *PerfolizerApp {
 	a := app.NewWithID("com.github.anry88.perfolizer")
+	return newPerfolizerApp(a)
+}
+
+func newPerfolizerApp(a fyne.App) *PerfolizerApp {
 	a.SetIcon(fyne.NewStaticResource("perfolizer-ui.png", icons.UIBuildIconPNG()))
 	w := a.NewWindow("Perfolizer")
 	w.Resize(fyne.NewSize(1024, 768))
