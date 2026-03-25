@@ -232,13 +232,11 @@ func parsePrometheusSnapshot(r io.Reader) (AgentMetricsSnapshot, error) {
 			continue
 		}
 
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
+		spec, rawValue, ok := splitPrometheusSampleLine(line)
+		if !ok {
 			continue
 		}
-
-		spec := parts[0]
-		value, err := strconv.ParseFloat(parts[1], 64)
+		value, err := strconv.ParseFloat(rawValue, 64)
 		if err != nil {
 			continue
 		}
@@ -338,7 +336,7 @@ func parseMetricWithLabels(spec string) (string, map[string]string, error) {
 	}
 	labels := make(map[string]string)
 
-	for _, pair := range strings.Split(labelSet, ",") {
+	for _, pair := range splitPrometheusLabelSet(labelSet) {
 		pair = strings.TrimSpace(pair)
 		if pair == "" {
 			continue
@@ -357,4 +355,81 @@ func parseMetricWithLabels(spec string) (string, map[string]string, error) {
 	}
 
 	return name, labels, nil
+}
+
+func splitPrometheusSampleLine(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", "", false
+	}
+
+	inQuotes := false
+	escaped := false
+	lastWhitespace := -1
+
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch ch {
+		case '\\':
+			if inQuotes {
+				escaped = true
+			}
+		case '"':
+			inQuotes = !inQuotes
+		case ' ', '\t':
+			if !inQuotes {
+				lastWhitespace = i
+			}
+		}
+	}
+
+	if lastWhitespace == -1 {
+		return "", "", false
+	}
+
+	spec := strings.TrimSpace(line[:lastWhitespace])
+	value := strings.TrimSpace(line[lastWhitespace+1:])
+	if spec == "" || value == "" {
+		return "", "", false
+	}
+	return spec, value, true
+}
+
+func splitPrometheusLabelSet(labelSet string) []string {
+	if strings.TrimSpace(labelSet) == "" {
+		return nil
+	}
+
+	parts := make([]string, 0, 2)
+	start := 0
+	inQuotes := false
+	escaped := false
+
+	for i := 0; i < len(labelSet); i++ {
+		ch := labelSet[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch ch {
+		case '\\':
+			if inQuotes {
+				escaped = true
+			}
+		case '"':
+			inQuotes = !inQuotes
+		case ',':
+			if !inQuotes {
+				parts = append(parts, labelSet[start:i])
+				start = i + 1
+			}
+		}
+	}
+
+	parts = append(parts, labelSet[start:])
+	return parts
 }

@@ -174,6 +174,23 @@ func (r *chartRenderer) Objects() []fyne.CanvasObject {
 			continue
 		}
 		data := s.Data
+		if len(data) == 1 {
+			x := float32(width * 0.5)
+			y := normY(data[0])
+			dot := canvas.NewCircle(s.Color)
+			dot.Resize(fyne.NewSize(8, 8))
+			dotX := x - 4
+			if dotX < 0 {
+				dotX = 0
+			}
+			dotY := y - 4
+			if dotY < 0 {
+				dotY = 0
+			}
+			dot.Move(fyne.NewPos(dotX, dotY))
+			objects = append(objects, dot)
+			continue
+		}
 		if len(data) < 2 {
 			continue
 		}

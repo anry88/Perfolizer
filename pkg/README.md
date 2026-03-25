@@ -4,6 +4,7 @@ This directory contains the product code split by responsibility.
 
 ## Package Map
 
+- [ai/README.md](ai/README.md): optional AI-assisted authoring, provider abstraction, rules-first draft and patch flows.
 - [agent/README.md](agent/README.md): execution agent, HTTP surfaces, Prometheus metrics, restart/admin flow.
 - [config/README.md](config/README.md): shared config loading and derived UI/agent addresses.
 - [core/README.md](core/README.md): project model, persistence, runtime context, interfaces, stats.
@@ -18,6 +19,7 @@ This directory contains the product code split by responsibility.
 4. The agent executes element trees from `pkg/elements`.
 5. Runtime metrics are aggregated through `pkg/core.StatsRunner`.
 6. The UI polls `/metrics` and updates dashboard/settings views.
+7. Optional AI-assisted flows in `pkg/ai` produce validated drafts or patches against the same core model.
 
 ## Extension Rule Of Thumb
 

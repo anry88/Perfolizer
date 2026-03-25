@@ -448,58 +448,7 @@ func formatHostMetrics(host AgentHostMetrics) string {
 }
 
 func (pa *PerfolizerApp) showPreferences() {
-	if pa.settingsWindow != nil {
-		pa.settingsWindow.RequestFocus()
-		return
-	}
-
-	w := pa.FyneApp.NewWindow("Settings")
-	w.Resize(fyne.NewSize(1320, 820))
-	pa.settingsWindow = w
-	w.SetOnClosed(func() {
-		pa.settingsWindow = nil
-	})
-
-	sections := []string{"General", "Shortcuts", "Agents"}
-	content := container.NewMax()
-
-	shortcutsPage := pa.buildShortcutsPage()
-	agentsPage := pa.buildAgentsPage(w)
-	pages := map[string]fyne.CanvasObject{
-		"General":   container.NewPadded(widget.NewCard("General", "", widget.NewLabel("General settings will appear here."))),
-		"Shortcuts": shortcutsPage,
-		"Agents":    agentsPage,
-	}
-
-	setSection := func(name string) {
-		page, ok := pages[name]
-		if !ok {
-			return
-		}
-		content.Objects = []fyne.CanvasObject{page}
-		content.Refresh()
-	}
-
-	sectionList := widget.NewList(
-		func() int { return len(sections) },
-		func() fyne.CanvasObject { return widget.NewLabel("Section") },
-		func(i widget.ListItemID, obj fyne.CanvasObject) {
-			obj.(*widget.Label).SetText(sections[i])
-		},
-	)
-	sectionList.OnSelected = func(id widget.ListItemID) {
-		setSection(sections[id])
-	}
-
-	layout := container.NewHSplit(
-		container.NewPadded(widget.NewCard("Settings", "", sectionList)),
-		container.NewPadded(content),
-	)
-	layout.SetOffset(0.2)
-	w.SetContent(layout)
-
-	sectionList.Select(0)
-	w.Show()
+	pa.showPreferencesWithSection("General")
 }
 
 func (pa *PerfolizerApp) buildShortcutsPage() fyne.CanvasObject {

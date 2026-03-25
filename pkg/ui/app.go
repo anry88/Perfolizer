@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"perfolizer/assets/icons"
+	aipkg "perfolizer/pkg/ai"
 	"perfolizer/pkg/core"
 	"perfolizer/pkg/elements"
 	"regexp"
@@ -153,6 +154,28 @@ type PerfolizerApp struct {
 	extractorSelector     *widget.Select
 	extractionResultEntry *ReadOnlyEntry
 	debugContentContainer *fyne.Container
+
+	AISettings aipkg.AISettings
+	aiEngine   *aipkg.Engine
+
+	mainContentHost  *fyne.Container
+	workspaceContent fyne.CanvasObject
+	aiPanel          fyne.CanvasObject
+	aiPanelVisible   bool
+	aiToggleButton   *widget.Button
+	aiStatusLabel    *widget.Label
+	aiContextLabel   *widget.Label
+	aiActionSelect   *widget.Select
+	aiURLEntry       *widget.Entry
+	aiGoalEntry      *widget.Entry
+	aiStatsEntry     *widget.Entry
+	aiPreviewEntry   *ReadOnlyEntry
+	aiApplyButton    *widget.Button
+	lastAIDraft      *aipkg.PlanDraft
+	lastAIPatch      *aipkg.PlanPatch
+	lastAIAction     string
+	codexAuthSession *aipkg.CodexAuthSession
+	secretStore      aiSecretStore
 }
 
 // ReadOnlyEntry is a custom entry that allows selection/copy but prevents modification
@@ -211,8 +234,13 @@ func newPerfolizerApp(a fyne.App) *PerfolizerApp {
 		agentRuntime:             make(map[string]agentRuntimeState),
 		propertyValidationErrors: make(map[string]error),
 		debugConsoleMode:         DebugModeNormal,
+		secretStore:              newAISecretStore(),
 	}
 	pa.initAgents(cfg.BaseURL(), defaultClient)
+	aiSettings := pa.loadAISettings()
+	pa.AISettings = aiSettings
+	pa.aiEngine = aipkg.NewEngine(aiSettings)
+	pa.aiPanelVisible = shouldOpenAIPanelOnStartup(aiSettings)
 
 	pa.setupTestPlan()
 	pa.setupUI()
@@ -333,6 +361,7 @@ func (pa *PerfolizerApp) setupUI() {
 			if pa.ParameterManager != nil {
 				pa.ParameterManager.Refresh()
 			}
+			pa.updateAIPanelState()
 		}
 	}
 
@@ -389,6 +418,7 @@ func (pa *PerfolizerApp) setupUI() {
 		widget.NewToolbarAction(theme.SearchReplaceIcon(), func() { pa.runDebugTest() }), // Debug
 		widget.NewToolbarAction(theme.MediaStopIcon(), func() { pa.stopTest() }),         // Stop
 	)
+	pa.aiToggleButton = widget.NewButton("AI Setup", func() { pa.toggleAIPanel() })
 
 	// 3. Layout
 	rightSplit := container.NewVSplit(pa.Content, debugPanel)
@@ -411,15 +441,20 @@ func (pa *PerfolizerApp) setupUI() {
 	)
 	split.SetOffset(0.3)
 
+	pa.aiPanel = pa.buildAIPanel()
+	pa.workspaceContent = split
+	pa.mainContentHost = container.NewMax()
+	pa.updateAIPanelState()
+
 	// Top bar: toolbar + separator so it doesn't blend with content
 	toolbarBar := container.NewVBox(
 		container.NewPadded(container.NewStack(
 			canvas.NewRectangle(theme.Color(theme.ColorNameButton)),
-			toolbar,
+			container.NewBorder(nil, nil, nil, pa.aiToggleButton, toolbar),
 		)),
 		widget.NewSeparator(),
 	)
-	mainLayout := container.NewBorder(toolbarBar, nil, nil, nil, split)
+	mainLayout := container.NewBorder(toolbarBar, nil, nil, nil, pa.mainContentHost)
 	pa.Window.SetContent(mainLayout)
 }
 
@@ -961,6 +996,8 @@ func (pa *PerfolizerApp) loadTestPlan() {
 		if pa.ParameterManager != nil {
 			pa.ParameterManager.Refresh()
 		}
+		pa.clearAIResult()
+		pa.updateAIPanelState()
 	}, pa.Window)
 }
 
@@ -1323,6 +1360,8 @@ func (pa *PerfolizerApp) addPlan() {
 	pa.Project.AddPlan("Test Plan", &root)
 	pa.Tree.RefreshItem("")
 	pa.Tree.OpenBranch(fmt.Sprintf("plan:%d", pa.Project.PlanCount()-1))
+	pa.clearAIResult()
+	pa.updateAIPanelState()
 }
 
 func (pa *PerfolizerApp) elementTypeName(el core.TestElement) string {
@@ -1491,6 +1530,8 @@ func (pa *PerfolizerApp) removeElement() {
 				pa.CurrentNodeID = ""
 				pa.Content.Objects = nil
 				pa.Content.Refresh()
+				pa.clearAIResult()
+				pa.updateAIPanelState()
 			}
 		}, pa.Window)
 		return
@@ -1507,6 +1548,8 @@ func (pa *PerfolizerApp) removeElement() {
 		pa.Content.Objects = nil
 		pa.Content.Refresh()
 		pa.CurrentNodeID = ""
+		pa.clearAIResult()
+		pa.updateAIPanelState()
 	}
 }
 
