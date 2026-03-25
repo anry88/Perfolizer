@@ -60,6 +60,16 @@ func TestValidateTestPlanRejectsInvalidValues(t *testing.T) {
 			contains: []string{`HTTP Sampler "Sampler"`, "Target RPS must be greater than or equal to 0"},
 		},
 		{
+			name: "zero simple thread group http timeout",
+			child: func() core.TestElement {
+				tg := elements.NewSimpleThreadGroup("Sampler Timeout Group", 1, 1)
+				tg.HTTPRequestTimeout = 0
+				tg.AddChild(elements.NewHttpSampler("Sampler", "GET", "http://example.com"))
+				return tg
+			}(),
+			contains: []string{`Simple Thread Group "Sampler Timeout Group"`, "HTTP request timeout must be greater than 0 ms"},
+		},
+		{
 			name: "negative pause duration",
 			child: func() core.TestElement {
 				tg := elements.NewSimpleThreadGroup("Pause Group", 1, 1)

@@ -176,3 +176,14 @@ func parseDurationMillisInput(field, raw string) (int64, error) {
 	}
 	return value, nil
 }
+
+func parsePositiveDurationMillisInput(field, raw string) (int64, error) {
+	value, err := parseDurationMillisInput(field, raw)
+	if err != nil {
+		return 0, err
+	}
+	if value <= 0 {
+		return 0, fmt.Errorf("%s must be greater than 0 ms", field)
+	}
+	return value, nil
+}

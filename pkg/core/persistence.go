@@ -257,6 +257,15 @@ func GetFloat(props map[string]interface{}, key string, def float64) float64 {
 	return def
 }
 
+func GetBool(props map[string]interface{}, key string, def bool) bool {
+	if v, ok := props[key]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return def
+}
+
 func GetStringMap(props map[string]interface{}, key string) map[string]string {
 	if v, ok := props[key]; ok {
 		if m, ok := v.(map[string]interface{}); ok {

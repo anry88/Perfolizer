@@ -54,6 +54,7 @@ go run ./cmd/perfolizer
 - Public README claims should stay grounded in shipped behavior. Avoid benchmark or feature claims that the code does not support.
 - The screenshot assets in `docs/screenshots/` are generated, not hand-maintained.
 - Current multi-agent UI is agent management and switching. Do not describe it as distributed orchestration unless that is implemented.
+- If code changes were made while on a main branch (for example `main` or `master`), create a new branch before committing or pushing those changes.
 
 ## Common Change Paths
 

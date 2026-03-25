@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"perfolizer/pkg/core"
+	"perfolizer/pkg/elements"
 )
 
 func TestReadProjectRejectsSinglePlanJSON(t *testing.T) {
@@ -195,6 +197,36 @@ func TestWriteReadMarshalAndUnmarshalTestPlan(t *testing.T) {
 	}
 }
 
+func TestThreadGroupHTTPSettingsPersistAcrossMarshalRoundTrip(t *testing.T) {
+	root := core.NewBaseElement("Test Plan")
+	tg := elements.NewSimpleThreadGroup("TG", 1, 1)
+	tg.HTTPRequestTimeout = 1750 * time.Millisecond
+	tg.HTTPKeepAlive = false
+	root.AddChild(tg)
+
+	payload, err := core.MarshalTestPlan(&root)
+	if err != nil {
+		t.Fatalf("MarshalTestPlan failed: %v", err)
+	}
+
+	loaded, err := core.UnmarshalTestPlan(payload)
+	if err != nil {
+		t.Fatalf("UnmarshalTestPlan failed: %v", err)
+	}
+
+	loadedTG, ok := loaded.GetChildren()[0].(*elements.SimpleThreadGroup)
+	if !ok {
+		t.Fatalf("expected simple thread group, got %T", loaded.GetChildren()[0])
+	}
+
+	if loadedTG.HTTPRequestTimeout != 1750*time.Millisecond {
+		t.Fatalf("expected timeout %v, got %v", 1750*time.Millisecond, loadedTG.HTTPRequestTimeout)
+	}
+	if loadedTG.HTTPKeepAlive {
+		t.Fatal("expected keep-alive=false to survive round-trip")
+	}
+}
+
 func TestSaveAndLoadTestPlanFromFile(t *testing.T) {
 	root := core.NewBaseElement("Plan Root")
 	path := filepath.Join(t.TempDir(), "plan.json")
@@ -226,6 +258,7 @@ func TestPropertyGetterHelpers(t *testing.T) {
 		"i_int":           11,
 		"f_float":         2.5,
 		"f_int":           3,
+		"b_true":          true,
 		"map_interface":   map[string]interface{}{"a": "1", "skip": 2},
 		"map_string":      map[string]string{"b": "2"},
 		"slice_interface": []interface{}{"x", 2, "y"},
@@ -267,6 +300,12 @@ func TestPropertyGetterHelpers(t *testing.T) {
 	}
 	if got := core.GetFloat(props, "missing", 1.25); got != 1.25 {
 		t.Fatalf("GetFloat(default) returned %f", got)
+	}
+	if got := core.GetBool(props, "b_true", false); !got {
+		t.Fatal("GetBool(bool) returned false")
+	}
+	if got := core.GetBool(props, "missing_bool", true); !got {
+		t.Fatal("GetBool(default) returned false")
 	}
 
 	m1 := core.GetStringMap(props, "map_interface")

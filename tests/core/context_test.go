@@ -57,6 +57,24 @@ func TestContextInheritsParentState(t *testing.T) {
 	}
 }
 
+func TestContextInheritsHTTPRuntimeFromParentContext(t *testing.T) {
+	runtime := core.NewHTTPRuntime(core.HTTPRuntimeOptions{
+		RequestTimeout: 1250 * time.Millisecond,
+	})
+
+	ctx := core.NewContext(core.WithHTTPRuntime(context.Background(), runtime), 9)
+
+	if got := ctx.HTTPClient(); got != runtime.Client {
+		t.Fatalf("expected inherited HTTP client %p, got %p", runtime.Client, got)
+	}
+	if got := ctx.EffectiveHTTPRequestTimeout(0); got != 1250*time.Millisecond {
+		t.Fatalf("expected inherited HTTP timeout %v, got %v", 1250*time.Millisecond, got)
+	}
+	if got := ctx.EffectiveHTTPRequestTimeout(250 * time.Millisecond); got != 250*time.Millisecond {
+		t.Fatalf("expected sampler override timeout %v, got %v", 250*time.Millisecond, got)
+	}
+}
+
 func TestContextAccessorsAndSampleResultDuration(t *testing.T) {
 	ctx := core.NewContext(context.Background(), 3)
 

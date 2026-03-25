@@ -39,6 +39,7 @@ When adding a new element type:
 ## Runtime Notes
 
 - Thread groups are usually the top-level executable children of the plan root.
+- Thread groups own the shared HTTP runtime settings used by descendant samplers, including request timeout and keep-alive policy.
 - `RPSThreadGroup` uses shared limiter state and profile blocks.
 - `HttpSampler` currently owns variable extraction from response bodies via regexp or simple JSON path evaluation.
 - `IfController` is currently serialized without a scriptable condition payload, so its JSON persistence is intentionally minimal.

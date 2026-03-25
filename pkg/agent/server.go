@@ -36,8 +36,8 @@ type Server struct {
 	stats           *core.StatsRunner
 	currentPlanName string
 
-	httpClient *http.Client
-	hostStats  *hostMetricsCollector
+	httpRuntime *core.HTTPRuntime
+	hostStats   *hostMetricsCollector
 
 	enableRemoteRestart bool
 	restartToken        string
@@ -52,9 +52,7 @@ type ServerOptions struct {
 
 func NewServer(options ServerOptions) *Server {
 	return &Server{
-		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
-		},
+		httpRuntime:         core.NewHTTPRuntime(core.HTTPRuntimeOptions{}),
 		hostStats:           newHostMetricsCollector(),
 		enableRemoteRestart: options.EnableRemoteRestart,
 		restartToken:        strings.TrimSpace(options.RestartToken),
@@ -90,7 +88,8 @@ func (s *Server) Start(plan core.TestElement) error {
 		return ErrAlreadyRunning
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	baseCtx, cancel := context.WithCancel(context.Background())
+	ctx := core.WithHTTPRuntime(baseCtx, s.httpRuntime)
 	s.stats = core.NewStatsRunner(ctx, nil)
 	s.running = true
 	s.cancel = cancel
@@ -329,8 +328,12 @@ func (s *Server) handleDebugHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	exchange.Request.Headers = cloneHeaders(req.Header)
 
+	reqCtx, cancel := context.WithTimeout(r.Context(), s.httpRuntime.EffectiveTimeout(0))
+	defer cancel()
+	req = req.WithContext(reqCtx)
+
 	started := time.Now()
-	resp, err := s.httpClient.Do(req)
+	resp, err := s.httpRuntime.ClientOrDefault().Do(req)
 	exchange.DurationMilliseconds = time.Since(started).Milliseconds()
 	if err != nil {
 		exchange.Error = err.Error()
