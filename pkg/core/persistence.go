@@ -134,6 +134,16 @@ func MarshalTestPlan(root TestElement) ([]byte, error) {
 	return json.Marshal(dto)
 }
 
+// TestElementToDTO converts a runtime element tree into the persisted DTO shape.
+func TestElementToDTO(root TestElement) TestElementDTO {
+	return toDTO(root)
+}
+
+// DTOToTestElement converts a persisted DTO back into a runtime element tree.
+func DTOToTestElement(dto TestElementDTO) (TestElement, error) {
+	return fromDTO(dto)
+}
+
 func UnmarshalTestPlan(data []byte) (TestElement, error) {
 	var dto TestElementDTO
 	if err := json.Unmarshal(data, &dto); err != nil {

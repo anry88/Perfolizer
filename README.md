@@ -43,6 +43,7 @@ Perfolizer is not trying to replace every performance-testing stack. It sits bet
 - Native desktop UI built with Fyne.
 - Separate agent process for test execution.
 - Multi-plan project persistence with JSON serialization.
+- Optional AI-assisted authoring with rules-first draft generation, refinement previews, OpenAI/local providers, a Codex CLI-backed provider, and secure OS-backed storage for OpenAI API keys.
 - Thread groups:
   - `Simple Thread Group`
   - `RPS Thread Group`
@@ -70,6 +71,7 @@ Perfolizer is not trying to replace every performance-testing stack. It sits bet
 - `cmd/agent`: execution agent exposing HTTP control surfaces, Prometheus metrics, host metrics, and admin restart hooks.
 - `pkg/ui`: Fyne-based UI layer.
 - `pkg/agent`: execution runtime, metrics exporter, and admin/debug HTTP surfaces.
+- `pkg/ai`: optional AI-assisted authoring, provider abstraction, and rules-first plan drafting.
 - `pkg/core`: plan model, runtime context, persistence, stats, and shared interfaces.
 - `pkg/elements`: concrete thread groups, samplers, and controllers.
 - `pkg/config`: shared agent/UI connectivity configuration.
@@ -96,6 +98,7 @@ The agent currently exposes these outward-facing HTTP endpoints:
 - `pkg/README.md`: package map for the product code.
 - `pkg/ui`: windows, charts, settings, agent client, and editor logic.
 - `pkg/agent`: HTTP server, metrics rendering, host metrics, and restart handling.
+- `pkg/ai`: AI settings, prompt/provider plumbing, and rules-first authoring helpers.
 - `pkg/core`: persistence, context, stats, and interfaces.
 - `pkg/elements`: samplers, controllers, and thread groups.
 - `pkg/config`: shared config loading and derived addresses.
