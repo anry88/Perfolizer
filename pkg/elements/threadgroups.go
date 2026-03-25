@@ -9,23 +9,32 @@ import (
 	"time"
 )
 
+const (
+	defaultThreadGroupHTTPRequestTimeout = 5 * time.Second
+	defaultThreadGroupHTTPKeepAlive      = true
+)
+
 func init() {
 	core.RegisterFactory("SimpleThreadGroup", func(name string, props map[string]interface{}) core.TestElement {
 		tg := &SimpleThreadGroup{
-			BaseElement: core.NewBaseElement(name),
-			Users:       core.GetInt(props, "Users", 1),
-			Iterations:  core.GetInt(props, "Iterations", 1),
+			BaseElement:        core.NewBaseElement(name),
+			Users:              core.GetInt(props, "Users", 1),
+			Iterations:         core.GetInt(props, "Iterations", 1),
+			HTTPRequestTimeout: time.Duration(core.GetInt(props, "HTTPRequestTimeoutMS", int(defaultThreadGroupHTTPRequestTimeout/time.Millisecond))) * time.Millisecond,
+			HTTPKeepAlive:      core.GetBool(props, "HTTPKeepAlive", defaultThreadGroupHTTPKeepAlive),
 		}
 		tg.Parameters = core.GetParameters(props, "Parameters")
 		return tg
 	})
 	core.RegisterFactory("RPSThreadGroup", func(name string, props map[string]interface{}) core.TestElement {
 		tg := &RPSThreadGroup{
-			BaseElement:      core.NewBaseElement(name),
-			Users:            core.GetInt(props, "Users", 10),
-			RPS:              core.GetFloat(props, "RPS", 10.0),
-			ProfileBlocks:    parseRPSProfileBlocks(props),
-			GracefulShutdown: time.Duration(core.GetInt(props, "GracefulShutdownMS", 0)) * time.Millisecond,
+			BaseElement:        core.NewBaseElement(name),
+			Users:              core.GetInt(props, "Users", 10),
+			RPS:                core.GetFloat(props, "RPS", 10.0),
+			ProfileBlocks:      parseRPSProfileBlocks(props),
+			GracefulShutdown:   time.Duration(core.GetInt(props, "GracefulShutdownMS", 0)) * time.Millisecond,
+			HTTPRequestTimeout: time.Duration(core.GetInt(props, "HTTPRequestTimeoutMS", int(defaultThreadGroupHTTPRequestTimeout/time.Millisecond))) * time.Millisecond,
+			HTTPKeepAlive:      core.GetBool(props, "HTTPKeepAlive", defaultThreadGroupHTTPKeepAlive),
 		}
 		tg.Parameters = core.GetParameters(props, "Parameters")
 		return tg
@@ -36,10 +45,12 @@ func init() {
 
 type SimpleThreadGroup struct {
 	core.BaseElement
-	Users      int
-	Iterations int // -1 for infinite
-	RampUp     time.Duration
-	Parameters []core.Parameter // Injected from Plan
+	Users              int
+	Iterations         int // -1 for infinite
+	RampUp             time.Duration
+	HTTPRequestTimeout time.Duration
+	HTTPKeepAlive      bool
+	Parameters         []core.Parameter // Injected from Plan
 }
 
 func (tg *SimpleThreadGroup) GetType() string {
@@ -48,17 +59,21 @@ func (tg *SimpleThreadGroup) GetType() string {
 
 func (tg *SimpleThreadGroup) GetProps() map[string]interface{} {
 	return map[string]interface{}{
-		"Users":      tg.Users,
-		"Iterations": tg.Iterations,
-		"Parameters": tg.Parameters,
+		"Users":                tg.Users,
+		"Iterations":           tg.Iterations,
+		"Parameters":           tg.Parameters,
+		"HTTPRequestTimeoutMS": tg.HTTPRequestTimeout.Milliseconds(),
+		"HTTPKeepAlive":        tg.HTTPKeepAlive,
 	}
 }
 
 func NewSimpleThreadGroup(name string, users, iterations int) *SimpleThreadGroup {
 	return &SimpleThreadGroup{
-		BaseElement: core.NewBaseElement(name),
-		Users:       users,
-		Iterations:  iterations,
+		BaseElement:        core.NewBaseElement(name),
+		Users:              users,
+		Iterations:         iterations,
+		HTTPRequestTimeout: defaultThreadGroupHTTPRequestTimeout,
+		HTTPKeepAlive:      defaultThreadGroupHTTPKeepAlive,
 	}
 }
 
@@ -76,13 +91,15 @@ func (tg *SimpleThreadGroup) Validate() error {
 	if err := ValidateIterations(tg.Iterations); err != nil {
 		return err
 	}
-	return nil
+	return validateThreadGroupHTTPSettings(tg.HTTPRequestTimeout)
 }
 
 func (tg *SimpleThreadGroup) Start(ctx context.Context, runner core.Runner) {
 	if err := tg.Validate(); err != nil {
 		return
 	}
+
+	groupCtx := core.WithHTTPRuntime(ctx, newThreadGroupHTTPRuntime(tg.HTTPRequestTimeout, tg.HTTPKeepAlive))
 
 	var wg sync.WaitGroup
 	wg.Add(tg.Users)
@@ -98,7 +115,7 @@ func (tg *SimpleThreadGroup) Start(ctx context.Context, runner core.Runner) {
 		if i > 0 && rampStep > 0 {
 			select {
 			case <-time.After(rampStep):
-			case <-ctx.Done():
+			case <-groupCtx.Done():
 				// If canceled during rampup, we still need to account for the added WG count
 				// But we shouldn't start the worker
 				wg.Done()
@@ -110,7 +127,7 @@ func (tg *SimpleThreadGroup) Start(ctx context.Context, runner core.Runner) {
 			defer wg.Done()
 
 			// Thread Context
-			tCtx := core.NewContext(ctx, threadID)
+			tCtx := core.NewContext(groupCtx, threadID)
 			tCtx.SetVar("Reporter", runner)
 			// Inject parameters
 			for _, p := range tg.Parameters {
@@ -121,7 +138,7 @@ func (tg *SimpleThreadGroup) Start(ctx context.Context, runner core.Runner) {
 			for iter := 0; tg.Iterations == -1 || iter < tg.Iterations; iter++ {
 				// Check for stop
 				select {
-				case <-ctx.Done():
+				case <-groupCtx.Done():
 					return
 				default:
 				}
@@ -138,7 +155,7 @@ func (tg *SimpleThreadGroup) Start(ctx context.Context, runner core.Runner) {
 						if err != nil {
 							// If error is due to cancellation, stop the thread
 							// We might also want to stop on other critical errors if configured
-							if ctx.Err() != nil {
+							if groupCtx.Err() != nil {
 								return
 							}
 						}
@@ -155,11 +172,13 @@ func (tg *SimpleThreadGroup) Start(ctx context.Context, runner core.Runner) {
 
 type RPSThreadGroup struct {
 	core.BaseElement
-	Users            int     // Max concurrent workers
-	RPS              float64 // Base Requests (Transactions) per second for samplers with TargetRPS=0
-	ProfileBlocks    []RPSProfileBlock
-	GracefulShutdown time.Duration
-	Parameters       []core.Parameter
+	Users              int     // Max concurrent workers
+	RPS                float64 // Base Requests (Transactions) per second for samplers with TargetRPS=0
+	ProfileBlocks      []RPSProfileBlock
+	GracefulShutdown   time.Duration
+	HTTPRequestTimeout time.Duration
+	HTTPKeepAlive      bool
+	Parameters         []core.Parameter
 }
 
 type RPSProfileBlock struct {
@@ -170,11 +189,13 @@ type RPSProfileBlock struct {
 
 func NewRPSThreadGroup(name string, rps float64) *RPSThreadGroup {
 	return &RPSThreadGroup{
-		BaseElement:      core.NewBaseElement(name),
-		Users:            10, // Default, maybe auto-scale in future
-		RPS:              rps,
-		ProfileBlocks:    []RPSProfileBlock{{RampUp: 0, StepDuration: 60 * time.Second, ProfilePercent: 100}},
-		GracefulShutdown: 0,
+		BaseElement:        core.NewBaseElement(name),
+		Users:              10, // Default, maybe auto-scale in future
+		RPS:                rps,
+		ProfileBlocks:      []RPSProfileBlock{{RampUp: 0, StepDuration: 60 * time.Second, ProfilePercent: 100}},
+		GracefulShutdown:   0,
+		HTTPRequestTimeout: defaultThreadGroupHTTPRequestTimeout,
+		HTTPKeepAlive:      defaultThreadGroupHTTPKeepAlive,
 	}
 }
 
@@ -193,11 +214,13 @@ func (tg *RPSThreadGroup) GetProps() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"Users":              tg.Users,
-		"RPS":                tg.RPS,
-		"ProfileBlocks":      blocks,
-		"GracefulShutdownMS": tg.GracefulShutdown.Milliseconds(),
-		"Parameters":         tg.Parameters,
+		"Users":                tg.Users,
+		"RPS":                  tg.RPS,
+		"ProfileBlocks":        blocks,
+		"GracefulShutdownMS":   tg.GracefulShutdown.Milliseconds(),
+		"HTTPRequestTimeoutMS": tg.HTTPRequestTimeout.Milliseconds(),
+		"HTTPKeepAlive":        tg.HTTPKeepAlive,
+		"Parameters":           tg.Parameters,
 	}
 }
 
@@ -219,6 +242,9 @@ func (tg *RPSThreadGroup) Validate() error {
 	if err := ValidateDuration("Graceful shutdown", tg.GracefulShutdown); err != nil {
 		return err
 	}
+	if err := validateThreadGroupHTTPSettings(tg.HTTPRequestTimeout); err != nil {
+		return err
+	}
 	for i, block := range tg.ProfileBlocks {
 		if err := ValidateDuration(fmt.Sprintf("Profile block %d ramp-up", i+1), block.RampUp); err != nil {
 			return err
@@ -237,6 +263,7 @@ func (tg *RPSThreadGroup) Start(ctx context.Context, runner core.Runner) {
 
 	groupCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	groupCtx = core.WithHTTPRuntime(groupCtx, newThreadGroupHTTPRuntime(tg.HTTPRequestTimeout, tg.HTTPKeepAlive))
 
 	sharedLimiters := newLimiterStore()
 	profileScale := newProfileScaleState(1)
@@ -320,6 +347,23 @@ func (tg *RPSThreadGroup) Start(ctx context.Context, runner core.Runner) {
 	}
 
 	wg.Wait()
+}
+
+func validateThreadGroupHTTPSettings(timeout time.Duration) error {
+	if err := ValidateDuration("HTTP request timeout", timeout); err != nil {
+		return err
+	}
+	if timeout <= 0 {
+		return fmt.Errorf("HTTP request timeout must be greater than 0 ms")
+	}
+	return nil
+}
+
+func newThreadGroupHTTPRuntime(timeout time.Duration, keepAlive bool) *core.HTTPRuntime {
+	return core.NewHTTPRuntime(core.HTTPRuntimeOptions{
+		RequestTimeout:    timeout,
+		DisableKeepAlives: !keepAlive,
+	})
 }
 
 func parseRPSProfileBlocks(props map[string]interface{}) []RPSProfileBlock {

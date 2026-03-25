@@ -86,3 +86,17 @@ func TestParseDurationMillisInput(t *testing.T) {
 		t.Fatalf("expected non-negative validation error, got %v", err)
 	}
 }
+
+func TestParsePositiveDurationMillisInput(t *testing.T) {
+	value, err := parsePositiveDurationMillisInput("HTTP request timeout", "5000")
+	if err != nil {
+		t.Fatalf("expected positive duration to be valid, got %v", err)
+	}
+	if value != 5000 {
+		t.Fatalf("expected 5000, got %d", value)
+	}
+
+	if _, err := parsePositiveDurationMillisInput("HTTP request timeout", "0"); err == nil || !strings.Contains(err.Error(), "HTTP request timeout must be greater than 0 ms") {
+		t.Fatalf("expected strict-positive validation error, got %v", err)
+	}
+}

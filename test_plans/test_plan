@@ -16,6 +16,8 @@
             "enabled": true,
             "props": {
               "GracefulShutdownMS": 0,
+              "HTTPKeepAlive": false,
+              "HTTPRequestTimeoutMS": 5000,
               "Parameters": [
                 {
                   "ID": "id_20260212184332.614516_15",
@@ -104,6 +106,8 @@
             "name": "Thread Group",
             "enabled": false,
             "props": {
+              "HTTPKeepAlive": true,
+              "HTTPRequestTimeoutMS": 5000,
               "Iterations": 10,
               "Parameters": [
                 {
@@ -209,6 +213,8 @@
             "enabled": true,
             "props": {
               "GracefulShutdownMS": 0,
+              "HTTPKeepAlive": true,
+              "HTTPRequestTimeoutMS": 3000,
               "Parameters": null,
               "ProfileBlocks": [
                 {

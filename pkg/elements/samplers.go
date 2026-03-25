@@ -2,6 +2,7 @@ package elements
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log"
 	"math"
@@ -122,11 +123,18 @@ func (h *HttpSampler) Execute(ctx *core.Context) error {
 	if err != nil {
 		return err // Or report error sample?
 	}
-	req = req.WithContext(ctx)
+
+	requestCtx := context.Context(ctx)
+	cancel := func() {}
+	if timeout := ctx.EffectiveHTTPRequestTimeout(0); timeout > 0 {
+		requestCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+	req = req.WithContext(requestCtx)
 
 	// 2. Execute
 	start := time.Now()
-	resp, err := http.DefaultClient.Do(req) // TODO: Use custom client
+	resp, err := ctx.HTTPClient().Do(req)
 	end := time.Now()
 
 	// 3. Report Result

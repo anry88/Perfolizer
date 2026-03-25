@@ -756,8 +756,20 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 			func(val int) { v.Iterations = val },
 		)
 
+		timeoutEntry := pa.newValidatedInt64Entry(
+			"HTTP request timeout",
+			strconv.FormatInt(v.HTTPRequestTimeout.Milliseconds(), 10),
+			func(s string) (int64, error) { return parsePositiveDurationMillisInput("HTTP request timeout", s) },
+			func(val int64) { v.HTTPRequestTimeout = time.Duration(val) * time.Millisecond },
+		)
+
+		keepAliveCheck := widget.NewCheck("", func(checked bool) { v.HTTPKeepAlive = checked })
+		keepAliveCheck.SetChecked(v.HTTPKeepAlive)
+
 		form.Append("Users", usersEntry)
 		form.Append("Iterations (-1 for infinite)", iterEntry)
+		form.Append("HTTP timeout (ms)", timeoutEntry)
+		form.Append("HTTP keep-alive", keepAliveCheck)
 
 	case *elements.RPSThreadGroup:
 		rpsEntry := pa.newValidatedFloatEntry(
@@ -869,10 +881,22 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 			func(val int64) { v.GracefulShutdown = time.Duration(val) * time.Millisecond },
 		)
 
+		timeoutEntry := pa.newValidatedInt64Entry(
+			"HTTP request timeout",
+			strconv.FormatInt(v.HTTPRequestTimeout.Milliseconds(), 10),
+			func(s string) (int64, error) { return parsePositiveDurationMillisInput("HTTP request timeout", s) },
+			func(val int64) { v.HTTPRequestTimeout = time.Duration(val) * time.Millisecond },
+		)
+
+		keepAliveCheck := widget.NewCheck("", func(checked bool) { v.HTTPKeepAlive = checked })
+		keepAliveCheck.SetChecked(v.HTTPKeepAlive)
+
 		form.Append("Target RPS", rpsEntry)
 		form.Append("Max Users", usersEntry)
 		form.Append("Profile blocks", container.NewVBox(blocksHeaders, blocksRows, addBlockButton))
 		form.Append("Graceful shutdown (ms)", gracefulEntry)
+		form.Append("HTTP timeout (ms)", timeoutEntry)
+		form.Append("HTTP keep-alive", keepAliveCheck)
 
 	case *elements.PauseController:
 		durEntry := pa.newValidatedInt64Entry(
