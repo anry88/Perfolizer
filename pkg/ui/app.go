@@ -132,6 +132,9 @@ type PerfolizerApp struct {
 
 	runStateMu sync.Mutex
 
+	propertyValidationMu     sync.Mutex
+	propertyValidationErrors map[string]error
+
 	cancelFunc     context.CancelFunc
 	isRunning      bool
 	isDebugRunning bool
@@ -202,11 +205,12 @@ func newPerfolizerApp(a fyne.App) *PerfolizerApp {
 		Window:  w,
 		Content: container.NewMax(widget.NewLabel("Select a node to edit")),
 
-		agentInitError:   cfgErr,
-		pollInterval:     pollInterval,
-		agentClients:     make(map[string]*AgentClient),
-		agentRuntime:     make(map[string]agentRuntimeState),
-		debugConsoleMode: DebugModeNormal,
+		agentInitError:           cfgErr,
+		pollInterval:             pollInterval,
+		agentClients:             make(map[string]*AgentClient),
+		agentRuntime:             make(map[string]agentRuntimeState),
+		propertyValidationErrors: make(map[string]error),
+		debugConsoleMode:         DebugModeNormal,
 	}
 	pa.initAgents(cfg.BaseURL(), defaultClient)
 
@@ -610,6 +614,7 @@ func (pa *PerfolizerApp) showPlanProperties(planIndex int) {
 	if pa.Project == nil || planIndex < 0 || planIndex >= pa.Project.PlanCount() {
 		return
 	}
+	pa.resetPropertyValidationErrors()
 	pa.Content.Objects = nil
 	pe := &pa.Project.Plans[planIndex]
 	nameEntry := widget.NewEntry()
@@ -624,6 +629,7 @@ func (pa *PerfolizerApp) showPlanProperties(planIndex int) {
 }
 
 func (pa *PerfolizerApp) showProperties(el core.TestElement) {
+	pa.resetPropertyValidationErrors()
 	pa.Content.Objects = nil
 
 	nameEntry := widget.NewEntry()
@@ -654,13 +660,12 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 		methodEntry := widget.NewSelect([]string{"GET", "POST", "PUT", "DELETE"}, func(s string) { v.Method = s })
 		methodEntry.SetSelected(v.Method)
 
-		rpsEntry := widget.NewEntry()
-		rpsEntry.SetText(strconv.FormatFloat(v.TargetRPS, 'f', 2, 64))
-		rpsEntry.OnChanged = func(s string) {
-			if val, err := strconv.ParseFloat(s, 64); err == nil {
-				v.TargetRPS = val
-			}
-		}
+		rpsEntry := pa.newValidatedFloatEntry(
+			"Target RPS",
+			strconv.FormatFloat(v.TargetRPS, 'f', 2, 64),
+			func(s string) (float64, error) { return parseRPSInput("Target RPS", s) },
+			func(val float64) { v.TargetRPS = val },
+		)
 
 		bodyEntry := widget.NewMultiLineEntry()
 		bodyEntry.SetMinRowsVisible(4)
@@ -737,41 +742,37 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 		form.Append("Extract Parameters", extractContainer)
 
 	case *elements.SimpleThreadGroup:
-		usersEntry := widget.NewEntry()
-		usersEntry.SetText(strconv.Itoa(v.Users))
-		usersEntry.OnChanged = func(s string) {
-			if val, err := strconv.Atoi(s); err == nil {
-				v.Users = val
-			}
-		}
+		usersEntry := pa.newValidatedIntEntry(
+			"Users",
+			strconv.Itoa(v.Users),
+			parseUsersInput,
+			func(val int) { v.Users = val },
+		)
 
-		iterEntry := widget.NewEntry()
-		iterEntry.SetText(strconv.Itoa(v.Iterations))
-		iterEntry.OnChanged = func(s string) {
-			if val, err := strconv.Atoi(s); err == nil {
-				v.Iterations = val
-			}
-		}
+		iterEntry := pa.newValidatedIntEntry(
+			"Iterations",
+			strconv.Itoa(v.Iterations),
+			parseIterationsInput,
+			func(val int) { v.Iterations = val },
+		)
 
 		form.Append("Users", usersEntry)
 		form.Append("Iterations (-1 for infinite)", iterEntry)
 
 	case *elements.RPSThreadGroup:
-		rpsEntry := widget.NewEntry()
-		rpsEntry.SetText(strconv.FormatFloat(v.RPS, 'f', 2, 64))
-		rpsEntry.OnChanged = func(s string) {
-			if val, err := strconv.ParseFloat(s, 64); err == nil {
-				v.RPS = val
-			}
-		}
+		rpsEntry := pa.newValidatedFloatEntry(
+			"RPS",
+			strconv.FormatFloat(v.RPS, 'f', 2, 64),
+			func(s string) (float64, error) { return parseRPSInput("RPS", s) },
+			func(val float64) { v.RPS = val },
+		)
 
-		usersEntry := widget.NewEntry()
-		usersEntry.SetText(strconv.Itoa(v.Users))
-		usersEntry.OnChanged = func(s string) {
-			if val, err := strconv.Atoi(s); err == nil {
-				v.Users = val
-			}
-		}
+		usersEntry := pa.newValidatedIntEntry(
+			"Users",
+			strconv.Itoa(v.Users),
+			parseUsersInput,
+			func(val int) { v.Users = val },
+		)
 
 		if len(v.ProfileBlocks) == 0 {
 			v.ProfileBlocks = []elements.RPSProfileBlock{
@@ -782,28 +783,39 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 		blocksRows := container.NewVBox()
 		var renderBlockRows func()
 		renderBlockRows = func() {
+			pa.clearPropertyValidationErrorsWithPrefix("Profile block ")
 			blocksRows.Objects = nil
 
 			for i := range v.ProfileBlocks {
 				index := i
 
-				rampEntry := widget.NewEntry()
+				rampEntry := pa.newValidatedInt64Entry(
+					fmt.Sprintf("Profile block %d ramp-up", index+1),
+					strconv.FormatInt(v.ProfileBlocks[index].RampUp.Milliseconds(), 10),
+					func(s string) (int64, error) {
+						return parseDurationMillisInput(fmt.Sprintf("Profile block %d ramp-up", index+1), s)
+					},
+					func(val int64) {
+						if index < len(v.ProfileBlocks) {
+							v.ProfileBlocks[index].RampUp = time.Duration(val) * time.Millisecond
+						}
+					},
+				)
 				rampEntry.SetPlaceHolder("Ramp-up ms")
-				rampEntry.SetText(strconv.FormatInt(v.ProfileBlocks[index].RampUp.Milliseconds(), 10))
-				rampEntry.OnChanged = func(s string) {
-					if val, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil && val >= 0 && index < len(v.ProfileBlocks) {
-						v.ProfileBlocks[index].RampUp = time.Duration(val) * time.Millisecond
-					}
-				}
 
-				stepEntry := widget.NewEntry()
+				stepEntry := pa.newValidatedInt64Entry(
+					fmt.Sprintf("Profile block %d step duration", index+1),
+					strconv.FormatInt(v.ProfileBlocks[index].StepDuration.Milliseconds(), 10),
+					func(s string) (int64, error) {
+						return parseDurationMillisInput(fmt.Sprintf("Profile block %d step duration", index+1), s)
+					},
+					func(val int64) {
+						if index < len(v.ProfileBlocks) {
+							v.ProfileBlocks[index].StepDuration = time.Duration(val) * time.Millisecond
+						}
+					},
+				)
 				stepEntry.SetPlaceHolder("Step ms")
-				stepEntry.SetText(strconv.FormatInt(v.ProfileBlocks[index].StepDuration.Milliseconds(), 10))
-				stepEntry.OnChanged = func(s string) {
-					if val, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil && val >= 0 && index < len(v.ProfileBlocks) {
-						v.ProfileBlocks[index].StepDuration = time.Duration(val) * time.Millisecond
-					}
-				}
 
 				profileEntry := widget.NewEntry()
 				profileEntry.SetPlaceHolder("Profile %")
@@ -850,13 +862,12 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 			renderBlockRows()
 		})
 
-		gracefulEntry := widget.NewEntry()
-		gracefulEntry.SetText(strconv.FormatInt(v.GracefulShutdown.Milliseconds(), 10))
-		gracefulEntry.OnChanged = func(s string) {
-			if val, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil && val >= 0 {
-				v.GracefulShutdown = time.Duration(val) * time.Millisecond
-			}
-		}
+		gracefulEntry := pa.newValidatedInt64Entry(
+			"Graceful shutdown",
+			strconv.FormatInt(v.GracefulShutdown.Milliseconds(), 10),
+			func(s string) (int64, error) { return parseDurationMillisInput("Graceful shutdown", s) },
+			func(val int64) { v.GracefulShutdown = time.Duration(val) * time.Millisecond },
+		)
 
 		form.Append("Target RPS", rpsEntry)
 		form.Append("Max Users", usersEntry)
@@ -864,14 +875,12 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 		form.Append("Graceful shutdown (ms)", gracefulEntry)
 
 	case *elements.PauseController:
-		durEntry := widget.NewEntry()
-		// Display in milliseconds
-		durEntry.SetText(strconv.FormatInt(v.Duration.Milliseconds(), 10))
-		durEntry.OnChanged = func(s string) {
-			if val, err := strconv.Atoi(s); err == nil {
-				v.Duration = time.Duration(val) * time.Millisecond
-			}
-		}
+		durEntry := pa.newValidatedInt64Entry(
+			"Duration",
+			strconv.FormatInt(v.Duration.Milliseconds(), 10),
+			func(s string) (int64, error) { return parseDurationMillisInput("Duration", s) },
+			func(val int64) { v.Duration = time.Duration(val) * time.Millisecond },
+		)
 
 		form.Append("Duration (ms)", durEntry)
 	}
@@ -950,6 +959,10 @@ func (pa *PerfolizerApp) runTest() {
 		dialog.ShowError(fmt.Errorf("no test plan selected"), pa.Window)
 		return
 	}
+	if err := pa.currentPropertyValidationError(); err != nil {
+		dialog.ShowError(err, pa.Window)
+		return
+	}
 	// Inject parameters into ThreadGroups (runtime binding)
 	if planIdx := pa.getCurrentPlanIndex(); planIdx >= 0 && planIdx < pa.Project.PlanCount() {
 		params := pa.Project.Plans[planIdx].Parameters
@@ -961,6 +974,11 @@ func (pa *PerfolizerApp) runTest() {
 				tg.Parameters = params
 			}
 		}
+	}
+
+	if err := core.ValidateTestPlan(plan); err != nil {
+		dialog.ShowError(err, pa.Window)
+		return
 	}
 
 	if err := client.RunTest(plan); err != nil {

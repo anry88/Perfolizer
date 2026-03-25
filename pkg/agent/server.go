@@ -75,6 +75,10 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) Start(plan core.TestElement) error {
+	if err := core.ValidateTestPlan(plan); err != nil {
+		return &core.ValidationError{Err: err}
+	}
+
 	planName := strings.TrimSpace(plan.Name())
 	if planName == "" {
 		planName = "unnamed-plan"
@@ -203,6 +207,12 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	log.Printf("run requested: from=%s plan=%q", r.RemoteAddr, planName)
 
 	if err := s.Start(plan); err != nil {
+		var validationErr *core.ValidationError
+		if errors.As(err, &validationErr) {
+			log.Printf("run rejected: invalid plan (from=%s plan=%q err=%v)", r.RemoteAddr, planName, validationErr)
+			http.Error(w, fmt.Sprintf("invalid test plan: %v", validationErr), http.StatusBadRequest)
+			return
+		}
 		if errors.Is(err, ErrAlreadyRunning) {
 			log.Printf("run rejected: already running (from=%s plan=%q)", r.RemoteAddr, planName)
 			http.Error(w, err.Error(), http.StatusConflict)

@@ -173,6 +173,10 @@ func (p *PauseController) Clone() core.TestElement {
 	return &newP
 }
 
+func (p *PauseController) Validate() error {
+	return ValidateDuration("Duration", p.Duration)
+}
+
 func (p *PauseController) Execute(ctx *core.Context) error {
 	select {
 	case <-time.After(p.Duration):

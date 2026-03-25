@@ -60,6 +60,10 @@ func (h *HttpSampler) Clone() core.TestElement {
 	return &newH
 }
 
+func (h *HttpSampler) Validate() error {
+	return ValidateRPS("Target RPS", h.TargetRPS)
+}
+
 func (h *HttpSampler) Execute(ctx *core.Context) error {
 	// 0. Rate Limiting (Per Sampler)
 

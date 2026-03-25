@@ -2,6 +2,7 @@ package elements
 
 import (
 	"context"
+	"fmt"
 	"perfolizer/pkg/core"
 	"runtime"
 	"sync"
@@ -68,7 +69,21 @@ func (tg *SimpleThreadGroup) Clone() core.TestElement {
 	return &newTG
 }
 
+func (tg *SimpleThreadGroup) Validate() error {
+	if err := ValidateUsers(tg.Users); err != nil {
+		return err
+	}
+	if err := ValidateIterations(tg.Iterations); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (tg *SimpleThreadGroup) Start(ctx context.Context, runner core.Runner) {
+	if err := tg.Validate(); err != nil {
+		return
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(tg.Users)
 
@@ -194,7 +209,32 @@ func (tg *RPSThreadGroup) Clone() core.TestElement {
 	return &newTG
 }
 
+func (tg *RPSThreadGroup) Validate() error {
+	if err := ValidateUsers(tg.Users); err != nil {
+		return err
+	}
+	if err := ValidateRPS("RPS", tg.RPS); err != nil {
+		return err
+	}
+	if err := ValidateDuration("Graceful shutdown", tg.GracefulShutdown); err != nil {
+		return err
+	}
+	for i, block := range tg.ProfileBlocks {
+		if err := ValidateDuration(fmt.Sprintf("Profile block %d ramp-up", i+1), block.RampUp); err != nil {
+			return err
+		}
+		if err := ValidateDuration(fmt.Sprintf("Profile block %d step duration", i+1), block.StepDuration); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (tg *RPSThreadGroup) Start(ctx context.Context, runner core.Runner) {
+	if err := tg.Validate(); err != nil {
+		return
+	}
+
 	groupCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
