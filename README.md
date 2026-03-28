@@ -91,6 +91,8 @@ The agent currently exposes these outward-facing HTTP endpoints:
 
 - `AGENTS.md`: repo-level onboarding for coding agents and contributors.
 - `README.md`: product overview and operating notes.
+- `Dockerfile.agent`: container build for the execution agent.
+- `compose.yaml`: Docker Desktop / `docker compose` entrypoint for the agent service.
 - `cmd/README.md`: executable entrypoint map and repo utilities.
 - `cmd/perfolizer`: desktop app entry point.
 - `cmd/agent`: agent entry point.
@@ -127,6 +129,37 @@ PERFOLIZER_AGENT_CONFIG=/path/to/agent.json go run ./cmd/agent
 ```
 
 The same config file is also used by the UI when it creates the default local-agent connection.
+
+## Running The Agent In Docker Desktop
+
+The repository now includes a ready-to-run Docker Desktop setup for the agent:
+
+```bash
+./scripts/docker/run_agent.sh
+```
+
+This command:
+
+- builds the agent image from `Dockerfile.agent`
+- starts the `perfolizer-agent` service from `compose.yaml`
+- publishes the agent on `http://127.0.0.1:9090`
+- mounts `config/agent.json` into the container so the same config remains editable from the repo
+
+Useful follow-up commands:
+
+```bash
+./scripts/docker/run_agent.sh logs
+./scripts/docker/run_agent.sh health
+./scripts/docker/run_agent.sh down
+```
+
+PowerShell equivalent:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\docker\run_agent.ps1
+```
+
+If you prefer the Docker Desktop UI, open the repo in Docker Desktop and run the `perfolizer-agent` service from `compose.yaml`.
 
 ## Running Checks
 

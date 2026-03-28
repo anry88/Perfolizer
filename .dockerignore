@@ -1,0 +1,14 @@
+.git
+.cache
+.idea
+dist
+coverage.out
+coverage.*
+*.out
+*.test
+*.exe
+*.dll
+*.so
+*.dylib
+perfolizer
+docs/screenshots

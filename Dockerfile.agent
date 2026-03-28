@@ -1,0 +1,31 @@
+FROM golang:1.25-alpine AS build
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY assets ./assets
+COPY cmd ./cmd
+COPY pkg ./pkg
+COPY config ./config
+
+ARG TARGETOS=linux
+ARG TARGETARCH
+
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/perfolizer-agent ./cmd/agent
+
+FROM alpine:3.22
+
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /app
+
+COPY config/agent.json /app/config/agent.json
+COPY --from=build /out/perfolizer-agent /usr/local/bin/perfolizer-agent
+
+ENV PERFOLIZER_AGENT_CONFIG=/app/config/agent.json
+
+EXPOSE 9090
+
+ENTRYPOINT ["perfolizer-agent"]

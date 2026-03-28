@@ -1,0 +1,21 @@
+name: perfolizer
+
+services:
+  perfolizer-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    image: perfolizer-agent:local
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/agent.json:/app/config/agent.json:ro
+    environment:
+      PERFOLIZER_AGENT_CONFIG: /app/config/agent.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
