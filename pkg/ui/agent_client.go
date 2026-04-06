@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -9,9 +8,11 @@ import (
 	"net/http"
 	"perfolizer/pkg/config"
 	"perfolizer/pkg/core"
-	"strconv"
 	"strings"
 	"time"
+
+	dto "github.com/prometheus/client_model/go"
+	"github.com/prometheus/common/expfmt"
 )
 
 type AgentClient struct {
@@ -223,213 +224,89 @@ func parsePrometheusSnapshot(r io.Reader) (AgentMetricsSnapshot, error) {
 		Data: make(map[string]core.Metric),
 	}
 
-	metrics := make(map[string]core.Metric)
-
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		spec, rawValue, ok := splitPrometheusSampleLine(line)
-		if !ok {
-			continue
-		}
-		value, err := strconv.ParseFloat(rawValue, 64)
-		if err != nil {
-			continue
-		}
-
-		name, labels, err := parseMetricWithLabels(spec)
-		if err != nil {
-			continue
-		}
-		sampler := labels["sampler"]
-
-		if name == "perfolizer_test_running" {
-			out.Running = value > 0
-			continue
-		}
-
-		switch name {
-		case "perfolizer_host_cpu_utilization_percent":
-			out.Host.CPUUtilizationPercent = value
-		case "perfolizer_host_memory_total_bytes":
-			out.Host.MemoryTotalBytes = uint64(value)
-		case "perfolizer_host_memory_used_bytes":
-			out.Host.MemoryUsedBytes = uint64(value)
-		case "perfolizer_host_memory_used_percent":
-			out.Host.MemoryUsedPercent = value
-		case "perfolizer_host_disk_total_bytes":
-			out.Host.DiskTotalBytes = uint64(value)
-			if path, ok := labels["path"]; ok {
-				out.Host.DiskPath = path
+	d := expfmt.NewDecoder(r, expfmt.FmtText)
+	for {
+		var mf dto.MetricFamily
+		if err := d.Decode(&mf); err != nil {
+			if err == io.EOF {
+				break
 			}
-		case "perfolizer_host_disk_used_bytes":
-			out.Host.DiskUsedBytes = uint64(value)
-			if path, ok := labels["path"]; ok {
-				out.Host.DiskPath = path
-			}
-		case "perfolizer_host_disk_used_percent":
-			out.Host.DiskUsedPercent = value
-			if path, ok := labels["path"]; ok {
-				out.Host.DiskPath = path
-			}
+			return out, fmt.Errorf("decode prometheus metrics: %w", err)
 		}
 
-		if sampler == "" {
-			continue
-		}
+		name := mf.GetName()
+		for _, m := range mf.Metric {
+			labels := make(map[string]string)
+			for _, lp := range m.Label {
+				labels[lp.GetName()] = lp.GetValue()
+			}
 
-		m := metrics[sampler]
-		switch name {
-		case "perfolizer_rps":
-			m.RPS = value
-		case "perfolizer_avg_response_time_ms":
-			m.AvgLatency = value
-		case "perfolizer_errors":
-			m.Errors = int(value)
-		case "perfolizer_requests_total":
-			m.TotalRequests = int(value)
-		case "perfolizer_errors_total":
-			m.TotalErrors = int(value)
+			var value float64
+			if m.Gauge != nil {
+				value = m.GetGauge().GetValue()
+			} else if m.Counter != nil {
+				value = m.GetCounter().GetValue()
+			} else if m.Untyped != nil {
+				value = m.GetUntyped().GetValue()
+			}
+
+			sampler := labels["sampler"]
+
+			if name == "perfolizer_test_running" {
+				out.Running = value > 0
+				continue
+			}
+
+			switch name {
+			case "perfolizer_host_cpu_utilization_percent":
+				out.Host.CPUUtilizationPercent = value
+			case "perfolizer_host_memory_total_bytes":
+				out.Host.MemoryTotalBytes = uint64(value)
+			case "perfolizer_host_memory_used_bytes":
+				out.Host.MemoryUsedBytes = uint64(value)
+			case "perfolizer_host_memory_used_percent":
+				out.Host.MemoryUsedPercent = value
+			case "perfolizer_host_disk_total_bytes":
+				out.Host.DiskTotalBytes = uint64(value)
+				if path, ok := labels["path"]; ok {
+					out.Host.DiskPath = path
+				}
+			case "perfolizer_host_disk_used_bytes":
+				out.Host.DiskUsedBytes = uint64(value)
+				if path, ok := labels["path"]; ok {
+					out.Host.DiskPath = path
+				}
+			case "perfolizer_host_disk_used_percent":
+				out.Host.DiskUsedPercent = value
+				if path, ok := labels["path"]; ok {
+					out.Host.DiskPath = path
+				}
+			}
+
+			if sampler == "" {
+				continue
+			}
+
+			metric := out.Data[sampler]
+			switch name {
+			case "perfolizer_rps":
+				metric.RPS = value
+			case "perfolizer_avg_response_time_ms":
+				metric.AvgLatency = value
+			case "perfolizer_errors":
+				metric.Errors = int(value)
+			case "perfolizer_requests_total":
+				metric.TotalRequests = int(value)
+			case "perfolizer_errors_total":
+				metric.TotalErrors = int(value)
+			}
+			out.Data[sampler] = metric
 		}
-		metrics[sampler] = m
 	}
 
-	if err := scanner.Err(); err != nil {
-		return out, fmt.Errorf("read metrics: %w", err)
+	if _, ok := out.Data["Total"]; !ok {
+		out.Data["Total"] = core.Metric{}
 	}
 
-	if _, ok := metrics["Total"]; !ok {
-		metrics["Total"] = core.Metric{}
-	}
-
-	out.Data = metrics
 	return out, nil
-}
-
-func parseMetricSpec(spec string) (string, string, error) {
-	name, labels, err := parseMetricWithLabels(spec)
-	if err != nil {
-		return "", "", err
-	}
-	return name, labels["sampler"], nil
-}
-
-func parseMetricWithLabels(spec string) (string, map[string]string, error) {
-	open := strings.IndexByte(spec, '{')
-	if open == -1 {
-		return spec, map[string]string{}, nil
-	}
-
-	close := strings.LastIndexByte(spec, '}')
-	if close == -1 || close < open {
-		return "", nil, fmt.Errorf("invalid metric labels: %s", spec)
-	}
-
-	name := spec[:open]
-	labelSet := spec[open+1 : close]
-	if labelSet == "" {
-		return name, map[string]string{}, nil
-	}
-	labels := make(map[string]string)
-
-	for _, pair := range splitPrometheusLabelSet(labelSet) {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		kv := strings.SplitN(pair, "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(kv[0])
-		val := strings.TrimSpace(kv[1])
-		unquoted, err := strconv.Unquote(val)
-		if err != nil {
-			return name, nil, err
-		}
-		labels[key] = unquoted
-	}
-
-	return name, labels, nil
-}
-
-func splitPrometheusSampleLine(line string) (string, string, bool) {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return "", "", false
-	}
-
-	inQuotes := false
-	escaped := false
-	lastWhitespace := -1
-
-	for i := 0; i < len(line); i++ {
-		ch := line[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		switch ch {
-		case '\\':
-			if inQuotes {
-				escaped = true
-			}
-		case '"':
-			inQuotes = !inQuotes
-		case ' ', '\t':
-			if !inQuotes {
-				lastWhitespace = i
-			}
-		}
-	}
-
-	if lastWhitespace == -1 {
-		return "", "", false
-	}
-
-	spec := strings.TrimSpace(line[:lastWhitespace])
-	value := strings.TrimSpace(line[lastWhitespace+1:])
-	if spec == "" || value == "" {
-		return "", "", false
-	}
-	return spec, value, true
-}
-
-func splitPrometheusLabelSet(labelSet string) []string {
-	if strings.TrimSpace(labelSet) == "" {
-		return nil
-	}
-
-	parts := make([]string, 0, 2)
-	start := 0
-	inQuotes := false
-	escaped := false
-
-	for i := 0; i < len(labelSet); i++ {
-		ch := labelSet[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		switch ch {
-		case '\\':
-			if inQuotes {
-				escaped = true
-			}
-		case '"':
-			inQuotes = !inQuotes
-		case ',':
-			if !inQuotes {
-				parts = append(parts, labelSet[start:i])
-				start = i + 1
-			}
-		}
-	}
-
-	parts = append(parts, labelSet[start:])
-	return parts
 }
