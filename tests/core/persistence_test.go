@@ -364,3 +364,63 @@ func TestLoadFunctionsReturnErrorOnBrokenJSON(t *testing.T) {
 		t.Fatal("expected LoadTestPlan error for broken json")
 	}
 }
+
+func TestReadProjectWithBrokenChildFails(t *testing.T) {
+	const projectJSON = `{
+  "name": "Project",
+  "plans": [
+    {
+      "name": "Plan 1",
+      "plan": {
+        "type": "TestPlan",
+        "name": "Root",
+        "children": [
+          {
+            "type": "UnknownType",
+            "name": "Broken Child"
+          }
+        ]
+      }
+    }
+  ]
+}`
+
+	_, err := core.ReadProject(strings.NewReader(projectJSON))
+	if err == nil {
+		t.Fatal("expected ReadProject to fail for unknown child type")
+	}
+
+	expectedPart := "plan[0]/UnknownType[0]"
+	if !strings.Contains(err.Error(), expectedPart) {
+		t.Fatalf("expected error to contain %q, got: %v", expectedPart, err)
+	}
+}
+
+func TestReadTestPlanDeepNestedError(t *testing.T) {
+	const planJSON = `{
+  "type": "TestPlan",
+  "name": "Root",
+  "children": [
+    {
+      "type": "TestPlan",
+      "name": "Level 1",
+      "children": [
+        {
+          "type": "UnknownType",
+          "name": "Level 2"
+        }
+      ]
+    }
+  ]
+}`
+
+	_, err := core.ReadTestPlan(strings.NewReader(planJSON))
+	if err == nil {
+		t.Fatal("expected ReadTestPlan to fail for deep unknown child type")
+	}
+
+	expectedPart := "root/TestPlan[0]/UnknownType[0]"
+	if !strings.Contains(err.Error(), expectedPart) {
+		t.Fatalf("expected error to contain %q, got: %v", expectedPart, err)
+	}
+}
