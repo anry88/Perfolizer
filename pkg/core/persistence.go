@@ -76,8 +76,9 @@ func ReadProject(r io.Reader) (*Project, error) {
 		return nil, fmt.Errorf("invalid project format: no plans found")
 	}
 	proj := &Project{Name: dto.Name, Plans: make([]PlanEntry, 0, len(dto.Plans))}
-	for _, pe := range dto.Plans {
-		root, err := fromDTO(pe.Plan)
+	for i, pe := range dto.Plans {
+		path := fmt.Sprintf("plan[%d]", i)
+		root, err := fromDTOWithPath(pe.Plan, path)
 		if err != nil {
 			return nil, err
 		}
@@ -126,7 +127,7 @@ func ReadTestPlan(r io.Reader) (TestElement, error) {
 	if err := json.NewDecoder(r).Decode(&dto); err != nil {
 		return nil, err
 	}
-	return fromDTO(dto)
+	return fromDTOWithPath(dto, "root")
 }
 
 func MarshalTestPlan(root TestElement) ([]byte, error) {
@@ -141,7 +142,7 @@ func TestElementToDTO(root TestElement) TestElementDTO {
 
 // DTOToTestElement converts a persisted DTO back into a runtime element tree.
 func DTOToTestElement(dto TestElementDTO) (TestElement, error) {
-	return fromDTO(dto)
+	return fromDTOWithPath(dto, "root")
 }
 
 func UnmarshalTestPlan(data []byte) (TestElement, error) {
@@ -149,7 +150,7 @@ func UnmarshalTestPlan(data []byte) (TestElement, error) {
 	if err := json.Unmarshal(data, &dto); err != nil {
 		return nil, err
 	}
-	return fromDTO(dto)
+	return fromDTOWithPath(dto, "root")
 }
 
 func toDTO(el TestElement) TestElementDTO {
@@ -178,6 +179,10 @@ func toDTO(el TestElement) TestElementDTO {
 }
 
 func fromDTO(dto TestElementDTO) (TestElement, error) {
+	return fromDTOWithPath(dto, "root")
+}
+
+func fromDTOWithPath(dto TestElementDTO, path string) (TestElement, error) {
 	factory := GetFactory(dto.Type)
 	var el TestElement
 
@@ -186,7 +191,7 @@ func fromDTO(dto TestElementDTO) (TestElement, error) {
 			e := NewBaseElement(dto.Name)
 			el = &e
 		} else {
-			return nil, fmt.Errorf("unknown element type: %s", dto.Type)
+			return nil, fmt.Errorf("%s: unknown element type: %s", path, dto.Type)
 		}
 	} else {
 		el = factory(dto.Name, dto.Props)
@@ -199,16 +204,22 @@ func fromDTO(dto TestElementDTO) (TestElement, error) {
 		el.SetEnabled(*dto.Enabled)
 	}
 
-	loadChildren(el, dto.Children)
+	if err := loadChildren(el, dto.Children, path); err != nil {
+		return nil, err
+	}
 	return el, nil
 }
 
-func loadChildren(parent TestElement, children []TestElementDTO) {
-	for _, childDTO := range children {
-		if child, err := fromDTO(childDTO); err == nil {
-			parent.AddChild(child)
+func loadChildren(parent TestElement, children []TestElementDTO, parentPath string) error {
+	for i, childDTO := range children {
+		childPath := fmt.Sprintf("%s/%s[%d]", parentPath, childDTO.Type, i)
+		child, err := fromDTOWithPath(childDTO, childPath)
+		if err != nil {
+			return err
 		}
+		parent.AddChild(child)
 	}
+	return nil
 }
 
 // Factory Registry
