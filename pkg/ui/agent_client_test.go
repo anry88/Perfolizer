@@ -39,18 +39,40 @@ perfolizer_errors_total{sampler="Search Query - random perf check alpha (1 RPS)"
 	}
 }
 
-func TestParseMetricWithLabelsSupportsCommasInsideQuotedValues(t *testing.T) {
-	name, labels, err := parseMetricWithLabels(`perfolizer_rps{sampler="GET /search, homepage flow",path="/tmp/demo"}`)
+func TestParsePrometheusSnapshotSupportsComplexLabels(t *testing.T) {
+	metrics := `
+perfolizer_rps{sampler="Sampler with , comma"} 1.5
+perfolizer_rps{sampler="Sampler with \"quoted\" value",path="/foo/bar"} 2.0
+perfolizer_rps{sampler="Sampler with escaped \\ backslash"} 3.0
+`
+
+	snapshot, err := parsePrometheusSnapshot(strings.NewReader(metrics))
 	if err != nil {
-		t.Fatalf("parseMetricWithLabels returned error: %v", err)
+		t.Fatalf("parsePrometheusSnapshot returned error: %v", err)
 	}
-	if name != "perfolizer_rps" {
-		t.Fatalf("expected metric name perfolizer_rps, got %q", name)
+
+	if snapshot.Data["Sampler with , comma"].RPS != 1.5 {
+		t.Fatalf("expected sampler with comma RPS 1.5, got %v", snapshot.Data["Sampler with , comma"].RPS)
 	}
-	if labels["sampler"] != "GET /search, homepage flow" {
-		t.Fatalf("expected sampler label to preserve comma, got %q", labels["sampler"])
+	if snapshot.Data["Sampler with \"quoted\" value"].RPS != 2.0 {
+		t.Fatalf("expected sampler with quotes RPS 2.0, got %v", snapshot.Data["Sampler with \"quoted\" value"].RPS)
 	}
-	if labels["path"] != "/tmp/demo" {
-		t.Fatalf("expected path label to parse, got %q", labels["path"])
+	if snapshot.Data["Sampler with escaped \\ backslash"].RPS != 3.0 {
+		t.Fatalf("expected sampler with backslash RPS 3.0, got %v", snapshot.Data["Sampler with escaped \\ backslash"].RPS)
+	}
+}
+
+func TestParsePrometheusSnapshotSupportsLongLines(t *testing.T) {
+	// Create a very long label value
+	longLabel := strings.Repeat("a", 1024*1024) // 1MB-ish label
+	metrics := `perfolizer_rps{sampler="` + longLabel + `"} 42.0` + "\n"
+
+	snapshot, err := parsePrometheusSnapshot(strings.NewReader(metrics))
+	if err != nil {
+		t.Fatalf("parsePrometheusSnapshot returned error for long line: %v", err)
+	}
+
+	if snapshot.Data[longLabel].RPS != 42.0 {
+		t.Fatalf("expected long label sampler RPS 42.0, got %v", snapshot.Data[longLabel].RPS)
 	}
 }
