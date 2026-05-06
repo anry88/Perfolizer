@@ -84,6 +84,13 @@ func (pa *PerfolizerApp) initAgents(defaultBaseURL string, defaultClient *AgentC
 		activeID = pa.agents[0].ID
 	}
 	pa.activeAgentID = activeID
+	// Default: select the active agent for runs
+	if pa.selectedRunAgents == nil {
+		pa.selectedRunAgents = make(map[string]bool)
+	}
+	if activeID != "" {
+		pa.selectedRunAgents[activeID] = true
+	}
 	pa.saveAgentsToPreferences()
 }
 
@@ -254,6 +261,27 @@ func (pa *PerfolizerApp) resolveStopTargetAgent(preferredAgentID string) (string
 	}
 
 	return pa.resolveActiveAgentClient()
+}
+
+// getSelectedRunAgents returns the IDs of agents selected for distributed runs.
+// Falls back to the active agent if no agents are explicitly selected.
+func (pa *PerfolizerApp) getSelectedRunAgents() []string {
+	var selected []string
+	for _, agent := range pa.agents {
+		if pa.selectedRunAgents[agent.ID] {
+			if pa.agentClients[agent.ID] != nil {
+				selected = append(selected, agent.ID)
+			}
+		}
+	}
+	if len(selected) == 0 {
+		// Fallback to active agent
+		activeID := pa.activeAgentID
+		if activeID != "" && pa.agentClients[activeID] != nil {
+			selected = append(selected, activeID)
+		}
+	}
+	return selected
 }
 
 func (pa *PerfolizerApp) currentPlanDisplayName() string {
@@ -584,11 +612,12 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 		func() int { return len(agentIDs) },
 		func() fyne.CanvasObject {
 			activeCheck := widget.NewCheck("Active", nil)
+			runCheck := widget.NewCheck("Run target", nil)
 			name := widget.NewLabel("Agent")
 			name.TextStyle = fyne.TextStyle{Bold: true}
 			details := widget.NewLabel("status: - | current test: -")
 			info := container.NewVBox(name, details)
-			return container.NewHBox(activeCheck, info)
+			return container.NewHBox(activeCheck, runCheck, info)
 		},
 		func(i widget.ListItemID, obj fyne.CanvasObject) {
 			agentID := agentIDs[i]
@@ -606,7 +635,8 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 			}
 			row := obj.(*fyne.Container)
 			activeCheck := row.Objects[0].(*widget.Check)
-			info := row.Objects[1].(*fyne.Container)
+			runCheck := row.Objects[1].(*widget.Check)
+			info := row.Objects[2].(*fyne.Container)
 			nameLabel := info.Objects[0].(*widget.Label)
 			detailsLabel := info.Objects[1].(*widget.Label)
 
@@ -629,6 +659,12 @@ func (pa *PerfolizerApp) buildAgentsPage(win fyne.Window) fyne.CanvasObject {
 				selectedID = currentAgentID
 				updateDetails()
 				refreshAgentList()
+			}
+
+			runCheck.OnChanged = nil
+			runCheck.SetChecked(pa.selectedRunAgents[currentAgentID])
+			runCheck.OnChanged = func(checked bool) {
+				pa.selectedRunAgents[currentAgentID] = checked
 			}
 		},
 	)

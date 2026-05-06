@@ -125,11 +125,12 @@ type PerfolizerApp struct {
 	agentInitError error
 	pollInterval   time.Duration
 
-	agents        []agentSettingsEntry
-	activeAgentID string
-	agentClients  map[string]*AgentClient
-	agentRuntime  map[string]agentRuntimeState
-	agentStateMu  sync.RWMutex
+	agents            []agentSettingsEntry
+	activeAgentID     string
+	selectedRunAgents map[string]bool // agents checked for distributed runs
+	agentClients      map[string]*AgentClient
+	agentRuntime      map[string]agentRuntimeState
+	agentStateMu      sync.RWMutex
 
 	runStateMu sync.Mutex
 
@@ -232,6 +233,7 @@ func newPerfolizerApp(a fyne.App) *PerfolizerApp {
 		pollInterval:             pollInterval,
 		agentClients:             make(map[string]*AgentClient),
 		agentRuntime:             make(map[string]agentRuntimeState),
+		selectedRunAgents:        make(map[string]bool),
 		propertyValidationErrors: make(map[string]error),
 		debugConsoleMode:         DebugModeNormal,
 		secretStore:              newAISecretStore(),
@@ -949,6 +951,50 @@ func (pa *PerfolizerApp) showProperties(el core.TestElement) {
 }
 
 func (pa *PerfolizerApp) saveTestPlan() {
+	saveProjectBtn := widget.NewButton("Save project", func() {
+		if top := pa.Window.Canvas().Overlays().Top(); top != nil {
+			top.Hide()
+		}
+		pa.doSaveProject()
+	})
+	savePlanBtn := widget.NewButton("Save test plan", func() {
+		if top := pa.Window.Canvas().Overlays().Top(); top != nil {
+			top.Hide()
+		}
+		pa.doSaveCurrentPlan()
+	})
+
+	agentCountEntry := widget.NewEntry()
+	agentCountEntry.SetText("2")
+	agentCountEntry.SetPlaceHolder("Number of agents")
+	splitBtn := widget.NewButton("Split for agents", func() {
+		if top := pa.Window.Canvas().Overlays().Top(); top != nil {
+			top.Hide()
+		}
+		count, err := strconv.Atoi(strings.TrimSpace(agentCountEntry.Text))
+		if err != nil || count < 1 {
+			dialog.ShowError(fmt.Errorf("invalid agent count: enter a positive integer"), pa.Window)
+			return
+		}
+		pa.doSaveSplitPlan(count)
+	})
+
+	splitRow := container.NewBorder(nil, nil, nil, splitBtn, agentCountEntry)
+	content := container.NewVBox(
+		widget.NewLabel("Choose save mode:"),
+		saveProjectBtn,
+		savePlanBtn,
+		widget.NewSeparator(),
+		widget.NewLabel("Split test plan for distributed agents:"),
+		splitRow,
+	)
+
+	d := dialog.NewCustom("Save", "Cancel", content, pa.Window)
+	d.Resize(fyne.NewSize(480, 300))
+	d.Show()
+}
+
+func (pa *PerfolizerApp) doSaveProject() {
 	dialog.ShowFileSave(func(writer fyne.URIWriteCloser, err error) {
 		if err != nil {
 			dialog.ShowError(err, pa.Window)
@@ -962,6 +1008,56 @@ func (pa *PerfolizerApp) saveTestPlan() {
 		if err := core.SaveProject(path, pa.Project); err != nil {
 			dialog.ShowError(err, pa.Window)
 		}
+	}, pa.Window)
+}
+
+func (pa *PerfolizerApp) doSaveCurrentPlan() {
+	plan := pa.getCurrentPlan()
+	if plan == nil {
+		dialog.ShowError(fmt.Errorf("no test plan selected"), pa.Window)
+		return
+	}
+	dialog.ShowFileSave(func(writer fyne.URIWriteCloser, err error) {
+		if err != nil {
+			dialog.ShowError(err, pa.Window)
+			return
+		}
+		if writer == nil {
+			return
+		}
+		defer writer.Close()
+		path := uriPath(writer.URI())
+		if err := core.SaveTestPlan(path, plan); err != nil {
+			dialog.ShowError(err, pa.Window)
+		}
+	}, pa.Window)
+}
+
+func (pa *PerfolizerApp) doSaveSplitPlan(agentCount int) {
+	plan := pa.getCurrentPlan()
+	if plan == nil {
+		dialog.ShowError(fmt.Errorf("no test plan selected"), pa.Window)
+		return
+	}
+	dialog.ShowFileSave(func(writer fyne.URIWriteCloser, err error) {
+		if err != nil {
+			dialog.ShowError(err, pa.Window)
+			return
+		}
+		if writer == nil {
+			return
+		}
+		writer.Close() // Close immediately; SaveSplitTestPlans creates its own files
+		basePath := uriPath(writer.URI())
+		paths, splitErr := core.SaveSplitTestPlans(basePath, plan, agentCount)
+		if splitErr != nil {
+			dialog.ShowError(splitErr, pa.Window)
+			return
+		}
+		dialog.ShowInformation("Split complete",
+			fmt.Sprintf("Saved %d test plan files:\n%s", len(paths), strings.Join(paths, "\n")),
+			pa.Window,
+		)
 	}, pa.Window)
 }
 
@@ -1006,15 +1102,6 @@ func (pa *PerfolizerApp) runTest() {
 		return
 	}
 
-	agentID, client, err := pa.resolveActiveAgentClient()
-	if err != nil {
-		if pa.agentInitError != nil {
-			err = fmt.Errorf("%w (config: %v)", err, pa.agentInitError)
-		}
-		dialog.ShowError(err, pa.Window)
-		return
-	}
-
 	plan := pa.getCurrentPlan()
 	if plan == nil {
 		dialog.ShowError(fmt.Errorf("no test plan selected"), pa.Window)
@@ -1042,6 +1129,100 @@ func (pa *PerfolizerApp) runTest() {
 		return
 	}
 
+	// Determine run target agents
+	runAgents := pa.getSelectedRunAgents()
+	if len(runAgents) == 0 {
+		// Fallback to active
+		agentID, client, err := pa.resolveActiveAgentClient()
+		if err != nil {
+			if pa.agentInitError != nil {
+				err = fmt.Errorf("%w (config: %v)", err, pa.agentInitError)
+			}
+			dialog.ShowError(err, pa.Window)
+			return
+		}
+		pa.runTestOnSingleAgent(agentID, client, plan)
+		return
+	}
+
+	if len(runAgents) == 1 {
+		agentID := runAgents[0]
+		client := pa.agentClients[agentID]
+		if client == nil {
+			dialog.ShowError(fmt.Errorf("agent %s is not configured", agentID), pa.Window)
+			return
+		}
+		pa.runTestOnSingleAgent(agentID, client, plan)
+		return
+	}
+
+	// Multi-agent: split the plan
+	splitPlans, err := core.SplitTestPlanForAgents(plan, len(runAgents))
+	if err != nil {
+		dialog.ShowError(fmt.Errorf("split plan for agents: %w", err), pa.Window)
+		return
+	}
+
+	// Send each shard to its agent
+	var sendErrors []string
+	for i, agentID := range runAgents {
+		client := pa.agentClients[agentID]
+		if client == nil {
+			sendErrors = append(sendErrors, fmt.Sprintf("%s: no client", agentID))
+			continue
+		}
+		if err := client.RunTest(splitPlans[i]); err != nil {
+			pa.markAgentUnavailable(agentID, err)
+			sendErrors = append(sendErrors, fmt.Sprintf("%s: %v", agentID, err))
+			continue
+		}
+	}
+
+	if len(sendErrors) > 0 {
+		dialog.ShowError(fmt.Errorf("some agents failed:\n%s", strings.Join(sendErrors, "\n")), pa.Window)
+		if len(sendErrors) == len(runAgents) {
+			return // All failed, nothing to monitor
+		}
+	}
+
+	// Start monitoring: use the first agent as the primary for run state tracking.
+	// Open a dashboard per agent.
+	primaryAgentID := runAgents[0]
+	ctx, cancel := context.WithCancel(context.Background())
+	started, previousCancel, runSessionID := pa.tryStartRunState(primaryAgentID, cancel)
+	if !started {
+		cancel()
+		return
+	}
+	if previousCancel != nil {
+		previousCancel()
+	}
+
+	for _, agentID := range runAgents {
+		client := pa.agentClients[agentID]
+		if client == nil {
+			continue
+		}
+		agentName := agentID
+		for _, a := range pa.agents {
+			if a.ID == agentID {
+				agentName = a.Name
+				break
+			}
+		}
+		pa.markAgentRunStarted(agentID, pa.currentPlanDisplayName(), time.Now())
+		dashboard := NewDashboardWindow(pa.FyneApp)
+		dashboard.Window.SetTitle(fmt.Sprintf("Dashboard — %s", agentName))
+		dashboard.Show()
+		if agentID == primaryAgentID {
+			go pa.pollAgentMetrics(ctx, dashboard, agentID, runSessionID, client)
+		} else {
+			go pa.pollAgentMetrics(ctx, dashboard, agentID, 0, client)
+		}
+	}
+}
+
+func (pa *PerfolizerApp) runTestOnSingleAgent(agentID string, client *AgentClient, plan core.TestElement) {
 	if err := client.RunTest(plan); err != nil {
 		pa.markAgentUnavailable(agentID, err)
 		dialog.ShowError(err, pa.Window)
@@ -1239,16 +1420,35 @@ func (pa *PerfolizerApp) stopTest() {
 	if cancel != nil {
 		cancel()
 	}
-	agentID, client, err := pa.resolveStopTargetAgent(runningAgentID)
-	if err != nil {
-		return
+
+	// Stop all selected run agents (for distributed runs)
+	stoppedAgents := make(map[string]bool)
+	for _, agentID := range pa.getSelectedRunAgents() {
+		client := pa.agentClients[agentID]
+		if client == nil {
+			continue
+		}
+		if err := client.StopTest(); err != nil {
+			pa.markAgentUnavailable(agentID, err)
+		} else {
+			pa.markAgentIdle(agentID)
+		}
+		stoppedAgents[agentID] = true
 	}
-	if err := client.StopTest(); err != nil {
-		pa.markAgentUnavailable(agentID, err)
-		dialog.ShowError(err, pa.Window)
-		return
+
+	// Also stop the primary running agent if it wasn't in the selected set
+	if runningAgentID != "" && !stoppedAgents[runningAgentID] {
+		agentID, client, err := pa.resolveStopTargetAgent(runningAgentID)
+		if err != nil {
+			return
+		}
+		if err := client.StopTest(); err != nil {
+			pa.markAgentUnavailable(agentID, err)
+			dialog.ShowError(err, pa.Window)
+			return
+		}
+		pa.markAgentIdle(agentID)
 	}
-	pa.markAgentIdle(agentID)
 }
 
 func (pa *PerfolizerApp) pollAgentMetrics(ctx context.Context, dashboard *DashboardWindow, agentID string, runSessionID uint64, client *AgentClient) {
