@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -237,5 +238,72 @@ func TestSaveSplitTestPlans(t *testing.T) {
 	}
 	if totalUsers != 10 {
 		t.Fatalf("expected total 10 users across split plans, got %d", totalUsers)
+	}
+}
+
+func TestSplitTestPlanForAgents_HttpSamplerTargetRPS(t *testing.T) {
+	root := core.NewBaseElement("Test Plan")
+	tg := elements.NewSimpleThreadGroup("TG1", 6, 5)
+	sampler := &elements.HttpSampler{
+		BaseElement: core.NewBaseElement("HTTP Request"),
+		Method:      "GET",
+		Url:         "http://example.com",
+		TargetRPS:   90.0,
+	}
+	tg.AddChild(sampler)
+	root.AddChild(tg)
+
+	plans, err := core.SplitTestPlanForAgents(&root, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(plans) != 3 {
+		t.Fatalf("expected 3 plans, got %d", len(plans))
+	}
+
+	totalRPS := 0.0
+	for i, plan := range plans {
+		loadedTG := plan.GetChildren()[0].(*elements.SimpleThreadGroup)
+		loadedSampler := loadedTG.GetChildren()[0].(*elements.HttpSampler)
+		totalRPS += loadedSampler.TargetRPS
+		// Each sampler should get 90/3 = 30 RPS
+		if loadedSampler.TargetRPS < 29.9 || loadedSampler.TargetRPS > 30.1 {
+			t.Fatalf("plan %d: expected ~30 TargetRPS, got %f", i, loadedSampler.TargetRPS)
+		}
+	}
+	if totalRPS < 89.9 || totalRPS > 90.1 {
+		t.Fatalf("expected total ~90 TargetRPS, got %f", totalRPS)
+	}
+}
+
+func TestSaveSplitTestPlans_RemovesEmptyRootFile(t *testing.T) {
+	root := core.NewBaseElement("Test Plan")
+	tg := elements.NewSimpleThreadGroup("TG1", 4, 1)
+	root.AddChild(tg)
+
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "plan.json")
+
+	// Simulate the empty file that Fyne's file-save dialog creates
+	if err := os.WriteFile(basePath, []byte{}, 0o644); err != nil {
+		t.Fatalf("failed to create root file: %v", err)
+	}
+
+	_, err := core.SaveSplitTestPlans(basePath, &root, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The empty root file should be removed
+	if _, err := os.Stat(basePath); err == nil {
+		t.Fatal("expected root file to be removed, but it still exists")
+	}
+
+	// The split files should exist
+	for i := 1; i <= 2; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("plan_%d.json", i))
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("split file %d not found: %v", i, err)
+		}
 	}
 }

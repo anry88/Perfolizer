@@ -49,53 +49,56 @@ func SplitTestPlanForAgents(root TestElement, agentCount int) ([]TestElement, er
 }
 
 // adjustDTOLoad walks the DTO tree and divides Users/RPS in thread groups
-// for the given agentIndex (0-based) out of agentCount total agents.
+// and TargetRPS in HTTP samplers for the given agentIndex (0-based) out of
+// agentCount total agents.
 func adjustDTOLoad(dto *TestElementDTO, agentIndex, agentCount int) {
 	switch dto.Type {
 	case "SimpleThreadGroup":
-		if users, ok := dto.Props["Users"]; ok {
-			usersInt := toInt(users)
-			if usersInt > 0 {
-				quotient := usersInt / agentCount
-				remainder := usersInt % agentCount
-				share := quotient
-				if agentIndex < remainder {
-					share++
-				}
-				// Ensure at least 1 user per agent if total >= agentCount
-				if share < 1 && usersInt >= agentCount {
-					share = 1
-				}
-				dto.Props["Users"] = share
-			}
-		}
+		splitIntProp(dto.Props, "Users", agentIndex, agentCount)
 	case "RPSThreadGroup":
-		if rps, ok := dto.Props["RPS"]; ok {
-			rpsFloat := toFloat64(rps)
-			if rpsFloat > 0 {
-				share := rpsFloat / float64(agentCount)
-				dto.Props["RPS"] = share
-			}
-		}
-		if users, ok := dto.Props["Users"]; ok {
-			usersInt := toInt(users)
-			if usersInt > 0 {
-				quotient := usersInt / agentCount
-				remainder := usersInt % agentCount
-				share := quotient
-				if agentIndex < remainder {
-					share++
-				}
-				if share < 1 && usersInt >= agentCount {
-					share = 1
-				}
-				dto.Props["Users"] = share
-			}
-		}
+		splitFloatProp(dto.Props, "RPS", agentCount)
+		splitIntProp(dto.Props, "Users", agentIndex, agentCount)
+	case "HttpSampler":
+		splitFloatProp(dto.Props, "TargetRPS", agentCount)
 	}
 
 	for i := range dto.Children {
 		adjustDTOLoad(&dto.Children[i], agentIndex, agentCount)
+	}
+}
+
+// splitIntProp divides an integer property across agents with remainder.
+func splitIntProp(props map[string]interface{}, key string, agentIndex, agentCount int) {
+	val, ok := props[key]
+	if !ok {
+		return
+	}
+	total := toInt(val)
+	if total <= 0 {
+		return
+	}
+	quotient := total / agentCount
+	remainder := total % agentCount
+	share := quotient
+	if agentIndex < remainder {
+		share++
+	}
+	// Ensure at least 1 per agent if total >= agentCount
+	if share < 1 && total >= agentCount {
+		share = 1
+	}
+	props[key] = share
+}
+
+// splitFloatProp divides a float property evenly across agents.
+func splitFloatProp(props map[string]interface{}, key string, agentCount int) {
+	val, ok := props[key]
+	if !ok {
+		return
+	}
+	total := toFloat64(val)
+	if total > 0 {
+		props[key] = total / float64(agentCount)
 	}
 }
 
@@ -130,6 +133,8 @@ func toFloat64(v interface{}) float64 {
 // SaveSplitTestPlans splits the test plan and saves each part to a separate file.
 // Files are named as basePath_1.json, basePath_2.json, etc.
 // basePath should be a path without extension (e.g. /path/to/plan).
+// If a file exists at basePath itself (e.g. created by a file-save dialog),
+// it is removed to avoid leaving an empty root file.
 func SaveSplitTestPlans(basePath string, root TestElement, agentCount int) ([]string, error) {
 	plans, err := SplitTestPlanForAgents(root, agentCount)
 	if err != nil {
@@ -142,6 +147,9 @@ func SaveSplitTestPlans(basePath string, root TestElement, agentCount int) ([]st
 	if ext == "" {
 		ext = ".json"
 	}
+
+	// Remove the empty root file left by the file-save dialog (if it exists)
+	_ = os.Remove(basePath)
 
 	savedPaths := make([]string, 0, len(plans))
 	for i, plan := range plans {
